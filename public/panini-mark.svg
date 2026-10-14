@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="panini-title">
+  <title id="panini-title">Panini</title>
+  <rect width="64" height="64" fill="#143fc4"/>
+  <text x="32" y="45" fill="#fffdf8" text-anchor="middle" font-family="Kohinoor Devanagari, Devanagari Sangam MN, sans-serif" font-size="43" font-weight="700">प</text>
+  <rect y="58" width="64" height="6" fill="#e13e24"/>
+</svg>

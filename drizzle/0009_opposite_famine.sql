@@ -1,0 +1,2 @@
+ALTER TABLE "proposals" DROP CONSTRAINT "proposals_state_check";--> statement-breakpoint
+ALTER TABLE "proposals" ADD CONSTRAINT "proposals_state_check" CHECK ("proposals"."state" IN ('pending','escalated','approved','rejected','auto_applied','superseded'));

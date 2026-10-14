@@ -1,0 +1,1 @@
+CREATE INDEX "context_entries_search_idx" ON "context_entries" USING gin (to_tsvector('simple', "path" || ' ' || "title" || ' ' || coalesce("body", '') || ' ' || coalesce("fact_type", '') || ' ' || coalesce("fact_value"::text, '')));

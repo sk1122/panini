@@ -1,0 +1,1 @@
+CREATE INDEX "model_calls_context_sources_idx" ON "model_calls" USING gin ("contextual_source_event_ids");

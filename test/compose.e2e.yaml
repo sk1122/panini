@@ -1,0 +1,35 @@
+# Disposable installation. Fixed credentials are test-only and ports bind to loopback.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: panini_e2e
+      POSTGRES_PASSWORD: panini_e2e_disposable_only
+      POSTGRES_DB: panini_e2e
+    ports:
+      - "127.0.0.1:55439:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U panini_e2e -d panini_e2e"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+  app:
+    build:
+      context: ..
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:4149:4141"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 4141
+      PANINI_PUBLIC_URL: http://127.0.0.1:4149
+      DATABASE_URL: postgres://panini_e2e:panini_e2e_disposable_only@postgres:5432/panini_e2e
+      CONTENT_ENCRYPTION_KEY: CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws=
+      APP_ADMIN_TOKEN: panini_admin_browser_test_disposable_installation_secret
+      AUTO_MIGRATE: "true"
+      APP_CONFIG_PATH: /app/config/panini.selfhost.yaml

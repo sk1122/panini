@@ -1,0 +1,1 @@
+ALTER TABLE "outbox_jobs" ADD COLUMN "locked_by" text;

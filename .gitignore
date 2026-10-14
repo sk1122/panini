@@ -1,0 +1,16 @@
+node_modules/
+dist/
+package-assets/
+.env
+.DS_Store
+coverage/
+*.log
+.team-ledger/
+.panini/
+config/team-ledger.local.yaml
+config/panini.local.yaml
+backups/*.dump
+
+# Private source data, replay receipts, generated images and database backups.
+artifacts/
+backups/

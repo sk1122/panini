@@ -1,0 +1,1 @@
+CREATE INDEX "evidence_claims_discovery_idx" ON "evidence_claims" USING btree ("organization_id","created_at","id");

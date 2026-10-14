@@ -1,0 +1,10 @@
+{
+  email {$ACME_EMAIL}
+}
+{$PANINI_DOMAIN} {
+  encode zstd gzip
+  request_body {
+    max_size 2MB
+  }
+  reverse_proxy app:4141
+}

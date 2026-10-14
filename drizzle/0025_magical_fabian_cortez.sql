@@ -1,0 +1,1 @@
+ALTER TABLE "model_calls" ADD COLUMN "contextual_source_event_ids" uuid[] DEFAULT '{}'::uuid[] NOT NULL;

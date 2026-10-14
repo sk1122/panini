@@ -1,0 +1,5 @@
+DROP INDEX "agent_workspace_profile_path_version_idx";--> statement-breakpoint
+ALTER TABLE "agent_workspace_file_revisions" ADD COLUMN "workspace_scope" text DEFAULT 'agent' NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "user_workspace_path_version_idx" ON "agent_workspace_file_revisions" USING btree ("organization_id","member_id","path","version") WHERE "agent_workspace_file_revisions"."workspace_scope" = 'user';--> statement-breakpoint
+CREATE UNIQUE INDEX "agent_workspace_profile_path_version_idx" ON "agent_workspace_file_revisions" USING btree ("agent_profile_id","path","version") WHERE "agent_workspace_file_revisions"."workspace_scope" = 'agent';--> statement-breakpoint
+ALTER TABLE "agent_workspace_file_revisions" ADD CONSTRAINT "workspace_scope_check" CHECK ("agent_workspace_file_revisions"."workspace_scope" IN ('agent', 'user'));

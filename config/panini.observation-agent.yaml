@@ -1,0 +1,24 @@
+company:
+  name: My Company
+policy:
+  mode: autonomous
+  autoApproveNewTasks: false
+  autoApproveContext: false
+  requireReviewForTaskChanges: true
+notion:
+  enabled: false
+intelligence:
+  enabled: false
+  evidenceV2:
+    mode: agent
+    pipelineVersion: observation-agent-v1
+    policyVersion: observation-agent-v1
+    maxContextObservations: 20
+    maxInputTokens: 24000
+    workEmbeddingsEnabled: true
+    maxEscalations: 0
+    maxEvidenceExpansions: 0
+    autoApplyClasses: []
+    authorityPolicies: []
+adjudication:
+  enabled: false

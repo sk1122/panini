@@ -1,0 +1,230 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1789504266754,
+      "tag": "0000_panini_phase_1_5",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789505474404,
+      "tag": "0001_agent_devices_and_repository_mappings",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789506817498,
+      "tag": "0002_mushy_omega_flight",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789508767143,
+      "tag": "0003_yummy_starjammers",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789509376319,
+      "tag": "0004_furry_barracuda",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789510322440,
+      "tag": "0005_normalize_context_revision_timestamps",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789510786571,
+      "tag": "0006_awesome_cable",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789511597054,
+      "tag": "0007_stormy_lifeguard",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789511960010,
+      "tag": "0008_clumsy_wolverine",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789556770357,
+      "tag": "0009_opposite_famine",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789566953078,
+      "tag": "0010_sticky_patch",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789652724647,
+      "tag": "0011_clammy_mikhail_rasputin",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789654241181,
+      "tag": "0012_normalize_context_temporal_timestamps",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789850193409,
+      "tag": "0013_smart_colonel_america",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1789926951909,
+      "tag": "0014_sharp_slayback",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1789928470776,
+      "tag": "0015_dear_bloodscream",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1790054960702,
+      "tag": "0016_personal_accounts_and_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790057584527,
+      "tag": "0017_github_login",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790074746873,
+      "tag": "0018_foamy_valeria_richards",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790811308892,
+      "tag": "0019_amusing_hardball",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1790811574595,
+      "tag": "0020_graceful_zombie",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1790812182088,
+      "tag": "0021_wealthy_sersi",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1790873742014,
+      "tag": "0022_worried_harpoon",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1790873911107,
+      "tag": "0023_brief_texas_twister",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790878034318,
+      "tag": "0024_tricky_thor_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1790881949697,
+      "tag": "0025_magical_fabian_cortez",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1790882588555,
+      "tag": "0026_supreme_lilith",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1790882853616,
+      "tag": "0027_tan_songbird",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1790888560753,
+      "tag": "0028_supreme_wolverine",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1790892000000,
+      "tag": "0029_legacy_work_link_revisions",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1791042491183,
+      "tag": "0030_observation_agent",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1791047718908,
+      "tag": "0031_observation_embeddings",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+ALTER TABLE "interpretation_runs" DROP CONSTRAINT "interpretation_runs_replay_mode_check";--> statement-breakpoint
+ALTER TABLE "interpretation_runs" ADD CONSTRAINT "interpretation_runs_replay_mode_check" CHECK ("interpretation_runs"."replay_mode" IS NULL OR "interpretation_runs"."replay_mode" IN ('live','accepted_rebuild','cached_reassess','source_reinterpret','historical_eval'));

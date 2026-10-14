@@ -1,0 +1,13 @@
+company:
+  name: My Company
+policy:
+  mode: manual_review
+  autoApproveNewTasks: false
+  autoApproveContext: false
+  requireReviewForTaskChanges: true
+notion:
+  enabled: false
+intelligence:
+  enabled: false
+adjudication:
+  enabled: false

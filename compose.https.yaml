@@ -1,0 +1,22 @@
+# Optional public edge. Only Caddy publishes publicly; application and DB stay on loopback.
+services:
+  app:
+    environment:
+      PANINI_TRUST_PROXY: "true"
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      PANINI_DOMAIN: ${PANINI_DOMAIN:?Set the DNS hostname only}
+      ACME_EMAIL: ${ACME_EMAIL:?Set the TLS certificate contact email}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - panini-caddy-data:/data
+      - panini-caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+volumes:
+  panini-caddy-data:
+  panini-caddy-config:
