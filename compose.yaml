@@ -1,119 +1,125 @@
 x-panini-environment: &panini-environment
-  NODE_ENV: production
-  DATABASE_URL: postgres://team_ledger:${POSTGRES_PASSWORD:?Run node scripts/selfhost.mjs init first}@postgres:5432/team_ledger
-  PANINI_PUBLIC_URL: ${PANINI_PUBLIC_URL:?Set the public HTTPS origin or loopback URL}
-  PANINI_TRUST_PROXY: ${PANINI_TRUST_PROXY:-false}
-  CONTENT_ENCRYPTION_KEY: ${CONTENT_ENCRYPTION_KEY:-}
-  AUTO_MIGRATE: "false"
-  APP_CONFIG_PATH: ${TEAM_LEDGER_CONTAINER_CONFIG_PATH:-/app/config/panini.observation-agent.yaml}
-  NOTION_TOKEN: ${NOTION_TOKEN:-}
-  SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
-  SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
-  GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
-  GITHUB_APP_ID: ${GITHUB_APP_ID:-}
-  GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
-  GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
-  GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
-  GITHUB_APP_PRIVATE_KEY_BASE64: ${GITHUB_APP_PRIVATE_KEY_BASE64:-}
-  GITHUB_CALLBACK_URL: ${GITHUB_CALLBACK_URL:-}
-  APP_ADMIN_TOKEN: ${APP_ADMIN_TOKEN:-}
-  INTELLIGENCE_API_KEY: ${INTELLIGENCE_API_KEY:-}
-  INTELLIGENCE_MODEL: ${INTELLIGENCE_MODEL:-gpt-6-luna}
-  INTELLIGENCE_BASE_URL: ${INTELLIGENCE_BASE_URL:-https://api.openai.com/v1}
-  PANINI_EVIDENCE_V2_ENABLED: ${PANINI_EVIDENCE_V2_ENABLED:-false}
-  PANINI_EVIDENCE_V2_VERSION: ${PANINI_EVIDENCE_V2_VERSION:-}
-  PANINI_EVIDENCE_V2_BUDGET_ID: ${PANINI_EVIDENCE_V2_BUDGET_ID:-}
-  ADJUDICATION_API_KEY: ${ADJUDICATION_API_KEY:-}
-  ADJUDICATION_MODEL: ${ADJUDICATION_MODEL:-}
-  ADJUDICATION_BASE_URL: ${ADJUDICATION_BASE_URL:-}
-  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-disabled}
-  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-  OPENROUTER_EMBEDDING_MODEL: ${OPENROUTER_EMBEDDING_MODEL:-voyageai/voyage-4}
+    NODE_ENV: production
+    DATABASE_URL: postgres://team_ledger:${POSTGRES_PASSWORD:?Run node scripts/selfhost.mjs init first}@postgres:5432/team_ledger
+    PANINI_PUBLIC_URL: ${PANINI_PUBLIC_URL:?Set the public HTTPS origin or loopback URL}
+    PANINI_TRUST_PROXY: ${PANINI_TRUST_PROXY:-false}
+    CONTENT_ENCRYPTION_KEY: ${CONTENT_ENCRYPTION_KEY:-}
+    AUTO_MIGRATE: "false"
+    APP_CONFIG_PATH: ${TEAM_LEDGER_CONTAINER_CONFIG_PATH:-/app/config/panini.observation-agent.yaml}
+    NOTION_TOKEN: ${NOTION_TOKEN:-}
+    SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
+    SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+    GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+    GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+    GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+    GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+    GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+    GITHUB_APP_PRIVATE_KEY_BASE64: ${GITHUB_APP_PRIVATE_KEY_BASE64:-}
+    GITHUB_CALLBACK_URL: ${GITHUB_CALLBACK_URL:-}
+    APP_ADMIN_TOKEN: ${APP_ADMIN_TOKEN:-}
+    INTELLIGENCE_API_KEY: ${INTELLIGENCE_API_KEY:-}
+    INTELLIGENCE_MODEL: ${INTELLIGENCE_MODEL:-gpt-6-luna}
+    INTELLIGENCE_BASE_URL: ${INTELLIGENCE_BASE_URL:-https://api.openai.com/v1}
+    PANINI_EVIDENCE_V2_ENABLED: ${PANINI_EVIDENCE_V2_ENABLED:-false}
+    PANINI_EVIDENCE_V2_VERSION: ${PANINI_EVIDENCE_V2_VERSION:-}
+    PANINI_EVIDENCE_V2_BUDGET_ID: ${PANINI_EVIDENCE_V2_BUDGET_ID:-}
+    ADJUDICATION_API_KEY: ${ADJUDICATION_API_KEY:-}
+    ADJUDICATION_MODEL: ${ADJUDICATION_MODEL:-}
+    ADJUDICATION_BASE_URL: ${ADJUDICATION_BASE_URL:-}
+    EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-disabled}
+    OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    OPENROUTER_EMBEDDING_MODEL: ${OPENROUTER_EMBEDDING_MODEL:-voyageai/voyage-4}
 
 services:
-  postgres:
-    image: postgres:17-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: team_ledger
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set the existing database password or run selfhost init}
-      POSTGRES_DB: team_ledger
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U team_ledger"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
-    ports:
-      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
-    volumes:
-      - team-ledger-postgres:/var/lib/postgresql/data
+    postgres:
+        image: postgres:17-alpine
+        restart: unless-stopped
+        environment:
+            POSTGRES_USER: team_ledger
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set the existing database password or run selfhost init}
+            POSTGRES_DB: team_ledger
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U team_ledger"]
+            interval: 3s
+            timeout: 3s
+            retries: 20
+        ports:
+            - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+        volumes:
+            - team-ledger-postgres:/var/lib/postgresql/data
 
-  migrate:
-    build: .
-    depends_on:
-      postgres:
-        condition: service_healthy
-    command: ["node", "dist/src/db/migrate.js"]
-    healthcheck:
-      disable: true
-    environment:
-      <<: *panini-environment
+    migrate:
+        build: .
+        depends_on:
+            postgres:
+                condition: service_healthy
+        command: ["node", "dist/src/db/migrate.js"]
+        healthcheck:
+            disable: true
+        environment:
+            <<: *panini-environment
 
-  app:
-    build: .
-    restart: unless-stopped
-    init: true
-    security_opt: ["no-new-privileges:true"]
-    cap_drop: ["ALL"]
-    read_only: true
-    tmpfs: ["/tmp"]
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    command: ["node", "dist/src/main.js"]
-    environment:
-      <<: *panini-environment
-      NODE_ENV: production
-      PORT: 4141
-      HOST: 0.0.0.0
-      RETRIEVAL_PROVIDER: ${RETRIEVAL_PROVIDER:-postgres}
-      JEV_WORK_ALLOWED_VISIBILITIES: ${JEV_WORK_ALLOWED_VISIBILITIES:-}
-      WORK_DRAFT_ALLOWED_VISIBILITIES: ${WORK_DRAFT_ALLOWED_VISIBILITIES:-}
-    ports:
-      - "127.0.0.1:${PANINI_PORT:-4141}:4141"
+    app:
+        build: .
+        restart: unless-stopped
+        init: true
+        security_opt: ["no-new-privileges:true"]
+        cap_drop: ["ALL"]
+        read_only: true
+        tmpfs: ["/tmp"]
+        logging:
+            driver: json-file
+            options: { max-size: "10m", max-file: "3" }
+        depends_on:
+            migrate:
+                condition: service_completed_successfully
+        command: ["node", "dist/src/main.js"]
+        environment:
+            <<: *panini-environment
+            NODE_ENV: production
+            PORT: 4141
+            HOST: 0.0.0.0
+            RETRIEVAL_PROVIDER: ${RETRIEVAL_PROVIDER:-postgres}
+            JEV_WORK_ALLOWED_VISIBILITIES: ${JEV_WORK_ALLOWED_VISIBILITIES:-}
+            WORK_DRAFT_ALLOWED_VISIBILITIES: ${WORK_DRAFT_ALLOWED_VISIBILITIES:-}
+        ports:
+            - "127.0.0.1:${PANINI_PORT:-4141}:4141"
 
-  worker:
-    build: .
-    restart: unless-stopped
-    init: true
-    security_opt: ["no-new-privileges:true"]
-    cap_drop: ["ALL"]
-    read_only: true
-    tmpfs: ["/tmp"]
-    stop_grace_period: 60s
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
-    healthcheck:
-      test: ["CMD", "node", "-e", "const fs=require('fs');process.exit(Date.now()-fs.statSync('/tmp/panini-worker-heartbeat').mtimeMs<90000?0:1)"]
-      interval: 30s
-      timeout: 5s
-      start_period: 120s
-      retries: 3
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    command: ["node", "dist/src/worker.js"]
-    environment:
-      <<: *panini-environment
-      RETRIEVAL_PROVIDER: ${RETRIEVAL_PROVIDER:-postgres}
-      JEV_WORK_ALLOWED_VISIBILITIES: ${JEV_WORK_ALLOWED_VISIBILITIES:-}
-      WORK_DRAFT_ALLOWED_VISIBILITIES: ${WORK_DRAFT_ALLOWED_VISIBILITIES:-}
-      WORK_SUGGESTIONS_ENABLED: ${WORK_SUGGESTIONS_ENABLED:-false}
-      WORK_STATUS_SUGGESTIONS_ENABLED: ${WORK_STATUS_SUGGESTIONS_ENABLED:-false}
+    worker:
+        build: .
+        restart: unless-stopped
+        init: true
+        security_opt: ["no-new-privileges:true"]
+        cap_drop: ["ALL"]
+        read_only: true
+        tmpfs: ["/tmp"]
+        stop_grace_period: 60s
+        logging:
+            driver: json-file
+            options: { max-size: "10m", max-file: "3" }
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "node",
+                    "-e",
+                    "const fs=require('fs');process.exit(Date.now()-fs.statSync('/tmp/panini-worker-heartbeat').mtimeMs<90000?0:1)",
+                ]
+            interval: 30s
+            timeout: 5s
+            start_period: 120s
+            retries: 3
+        depends_on:
+            migrate:
+                condition: service_completed_successfully
+        command: ["node", "dist/src/worker.js"]
+        environment:
+            <<: *panini-environment
+            RETRIEVAL_PROVIDER: ${RETRIEVAL_PROVIDER:-postgres}
+            JEV_WORK_ALLOWED_VISIBILITIES: ${JEV_WORK_ALLOWED_VISIBILITIES:-}
+            WORK_DRAFT_ALLOWED_VISIBILITIES: ${WORK_DRAFT_ALLOWED_VISIBILITIES:-}
+            WORK_SUGGESTIONS_ENABLED: ${WORK_SUGGESTIONS_ENABLED:-false}
+            WORK_STATUS_SUGGESTIONS_ENABLED: ${WORK_STATUS_SUGGESTIONS_ENABLED:-false}
 
 volumes:
-  team-ledger-postgres:
+    team-ledger-postgres:

@@ -9,3 +9,7 @@ backups
 *.dump
 *.log
 coverage
+
+artifacts
+.pnpm-store
+package-assets

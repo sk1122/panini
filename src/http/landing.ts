@@ -2,12 +2,17 @@ import { landingScript } from "./landing-script.js";
 import { landingStyles } from "./landing-styles.js";
 
 function html(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+	return value
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;");
 }
 
 export function renderLandingPage(nonce: string): string {
-  const safeNonce = html(nonce);
-  return `<!doctype html>
+	const safeNonce = html(nonce);
+
+	return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">

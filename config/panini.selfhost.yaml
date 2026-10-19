@@ -1,13 +1,13 @@
 company:
-  name: My Company
+    name: My Company
 policy:
-  mode: manual_review
-  autoApproveNewTasks: false
-  autoApproveContext: false
-  requireReviewForTaskChanges: true
+    mode: manual_review
+    autoApproveNewTasks: false
+    autoApproveContext: false
+    requireReviewForTaskChanges: true
 notion:
-  enabled: false
+    enabled: false
 intelligence:
-  enabled: false
+    enabled: false
 adjudication:
-  enabled: false
+    enabled: false

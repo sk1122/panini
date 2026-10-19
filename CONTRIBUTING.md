@@ -12,3 +12,10 @@ Before opening a pull request:
 
 Bug reports should include the storage mode, connector type, sanitized configuration shape, expected behavior, and observed behavior. Never include access tokens or private source content.
 
+## Formatting
+
+Use tabs with a display width of 4. Keep related variable declarations together, with a blank line before and after the group. Separate functions and class methods with a blank line.
+
+Run `pnpm format` to apply these rules. Run `pnpm format:check` to check them. ESLint adds the blank lines; Prettier formats indentation. YAML uses spaces because YAML does not allow indentation tabs.
+
+Generated files, replay artifacts, and database backups are excluded.

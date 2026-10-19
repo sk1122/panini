@@ -1,76 +1,86 @@
 company:
-  name: Example Company
+    name: Example Company
 
 policy:
-  mode: manual_review
-  autoApproveNewTasks: false
-  autoApproveContext: false
-  requireReviewForTaskChanges: true
+    mode: manual_review
+    autoApproveNewTasks: false
+    autoApproveContext: false
+    requireReviewForTaskChanges: true
 
 notion:
-  enabled: false
-  pollIntervalSeconds: 300
-  apiVersion: "2026-03-11"
-  sources:
-    - key: projects
-      kind: data_source
-      resourceId: replace-with-notion-data-source-id
-      ingestAs: task_board
-      properties:
-        title: Name
-        status: Status
-        owner: Owner
-        dueDate: Due
-        priority: Priority
-        project: Project
-    - key: handbook
-      kind: page
-      resourceId: replace-with-notion-page-id
-      ingestAs: company_context
-      contextPath: /sources/notion/handbook.md
-    - key: workspace-pages
-      kind: workspace
-      ingestAs: company_context
-      contextPath: /sources/notion/pages
+    enabled: false
+    pollIntervalSeconds: 300
+    apiVersion: "2026-03-11"
+    sources:
+        - key: projects
+          kind: data_source
+          resourceId: replace-with-notion-data-source-id
+          ingestAs: task_board
+          properties:
+              title: Name
+              status: Status
+              owner: Owner
+              dueDate: Due
+              priority: Priority
+              project: Project
+        - key: handbook
+          kind: page
+          resourceId: replace-with-notion-page-id
+          ingestAs: company_context
+          contextPath: /sources/notion/handbook.md
+        - key: workspace-pages
+          kind: workspace
+          ingestAs: company_context
+          contextPath: /sources/notion/pages
 
 slack:
-  enabled: false
-  installationKey: default
-  channels: []
-  captureMode: reaction
-  captureReactions: [panini, bookmark]
+    enabled: false
+    installationKey: default
+    channels: []
+    captureMode: reaction
+    captureReactions: [panini, bookmark]
 
 github:
-  enabled: false
-  installationKey: default
-  repositories: []
+    enabled: false
+    installationKey: default
+    repositories: []
 
 # LLM interpretation is opt-in. It creates cited proposals, never direct task state.
 intelligence:
-  enabled: true
-  mode: manual
-  intervalSeconds: 900
-  maxEventsPerRun: 50
-  maxEvidenceCharacters: 60000
-  maxSourceDocumentCharacters: 320000
-  maxContextCharacters: 30000
-  minimumConfidence: 0.7
-  completionMinimumConfidence: 0.85
-  completionMinimumEvidenceItems: 2
-  completionEvidenceProviders: [github, git, codex, claude_code, agent]
-  reconciliationEnabled: true
-  reconciliationIntervalSeconds: 900
-  reconciliationMinimumAgeSeconds: 300
-  sourceProviders: ["notion:source.document.retrieved", slack, github, git, codex, claude_code, agent, manual]
+    enabled: true
+    mode: manual
+    intervalSeconds: 900
+    maxEventsPerRun: 50
+    maxEvidenceCharacters: 60000
+    maxSourceDocumentCharacters: 320000
+    maxContextCharacters: 30000
+    minimumConfidence: 0.7
+    completionMinimumConfidence: 0.85
+    completionMinimumEvidenceItems: 2
+    completionEvidenceProviders: [github, git, codex, claude_code, agent]
+    reconciliationEnabled: true
+    reconciliationIntervalSeconds: 900
+    reconciliationMinimumAgeSeconds: 300
+    sourceProviders:
+        [
+            "notion:source.document.retrieved",
+            slack,
+            github,
+            git,
+            codex,
+            claude_code,
+            agent,
+            manual,
+        ]
 
 # Set policy.mode to autonomous and enable this block to let Panini decide proposals.
 # Findings still pass through the audited proposal and revision boundary.
 adjudication:
-  enabled: false
-  mode: manual
-  intervalSeconds: 30
-  maxProposalsPerRun: 20
-  maxEvidenceCharacters: 80000
-  maxHistoryCharacters: 60000
-  maxHistoryItems: 30
-  approvalMinimumConfidence: 0.8
+    enabled: false
+    mode: manual
+    intervalSeconds: 30
+    maxProposalsPerRun: 20
+    maxEvidenceCharacters: 80000
+    maxHistoryCharacters: 60000
+    maxHistoryItems: 30
+    approvalMinimumConfidence: 0.8

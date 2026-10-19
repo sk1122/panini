@@ -61,14 +61,14 @@ flowchart LR
 
 Company memory is the durable whole. Interfaces present projections of it for different jobs.
 
-| Projection | Primary question |
-| --- | --- |
-| People | Who works here, what are they responsible for, and how has their work changed? |
-| Work | What are the company, its projects, and tasks trying to accomplish? |
-| Context | What does the company currently know, believe, require, or prohibit, and what long-running Project documents is it working from? |
-| History | What changed, when, why, through whose authority, and from which evidence? |
-| Agent Context Pack | What does this employee's agent need for this repository, task, objective, and moment? |
-| Evidence | What was actually observed, and what are the limits of source coverage? |
+| Projection         | Primary question                                                                                                                 |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| People             | Who works here, what are they responsible for, and how has their work changed?                                                   |
+| Work               | What are the company, its projects, and tasks trying to accomplish?                                                              |
+| Context            | What does the company currently know, believe, require, or prohibit, and what long-running Project documents is it working from? |
+| History            | What changed, when, why, through whose authority, and from which evidence?                                                       |
+| Agent Context Pack | What does this employee's agent need for this repository, task, objective, and moment?                                           |
+| Evidence           | What was actually observed, and what are the limits of source coverage?                                                          |
 
 Tasks, context, and memory are not three unrelated products. People, work, context, evidence, and history together form Panini's company-memory model.
 
@@ -107,14 +107,14 @@ Panini must not become an employee-surveillance product. It should explain compa
 
 ## Memory and context are different
 
-| Concept | Meaning | Owner | Lifetime |
-| --- | --- | --- | --- |
-| Company Memory | Versioned people, work, context facts and documents, decisions, evidence lineage, and history, with each item's status preserved | Organization | Durable |
-| Context Pack | Bounded projection compiled for one principal and situation | Requesting employee agent | Ephemeral |
-| Working Memory | Prompts, transcript, scratchpad, tool output, and unfinished reasoning | Employee and local harness | Local/session-scoped by default |
-| Private Agent Workspace | Opt-in, versioned files owned by a member's agent; not accepted company facts | Employee and agent | Durable until deleted or revoked |
-| Retrieval Index | Search summaries, embeddings, or other derived retrieval structures | Panini | Rebuildable |
-| Source Content | Authorized material retained to verify an observation | Source policy | Revocable and retention-bound |
+| Concept                 | Meaning                                                                                                                          | Owner                      | Lifetime                         |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | -------------------------------- |
+| Company Memory          | Versioned people, work, context facts and documents, decisions, evidence lineage, and history, with each item's status preserved | Organization               | Durable                          |
+| Context Pack            | Bounded projection compiled for one principal and situation                                                                      | Requesting employee agent  | Ephemeral                        |
+| Working Memory          | Prompts, transcript, scratchpad, tool output, and unfinished reasoning                                                           | Employee and local harness | Local/session-scoped by default  |
+| Private Agent Workspace | Opt-in, versioned files owned by a member's agent; not accepted company facts                                                    | Employee and agent         | Durable until deleted or revoked |
+| Retrieval Index         | Search summaries, embeddings, or other derived retrieval structures                                                              | Panini                     | Rebuildable                      |
+| Source Content          | Authorized material retained to verify an observation                                                                            | Source policy              | Revocable and retention-bound    |
 
 Panini does not ingest complete private agent conversations by default. Durable company memory receives structured outcomes, artifact references, verification summaries, approved excerpts, source observations, and explicit proposals.
 
@@ -154,12 +154,12 @@ Panini must answer both:
 
 Preserve distinct times:
 
-| Time | Meaning |
-| --- | --- |
-| Occurred Time | When the source claims the event or state existed |
-| Fetched Time | When a connector retrieved the source |
-| Received Time | When Panini recorded the observation |
-| Accepted Time | When an authorized decision created a revision |
+| Time               | Meaning                                                   |
+| ------------------ | --------------------------------------------------------- |
+| Occurred Time      | When the source claims the event or state existed         |
+| Fetched Time       | When a connector retrieved the source                     |
+| Received Time      | When Panini recorded the observation                      |
+| Accepted Time      | When an authorized decision created a revision            |
 | Effective Interval | When the accepted claim is considered true in the company |
 
 Do not equate ingestion order, model-run time, or adjudication time with the time a claim became true.

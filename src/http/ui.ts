@@ -2,13 +2,22 @@ import { appScript } from "./ui-script.js";
 import { appStyles } from "./ui-styles.js";
 
 function html(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+	return value
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;");
 }
 
-export function renderAppShell(companyName: string, nonce: string, accountsEnabled = false): string {
-  const safeCompany = html(companyName);
-  const safeNonce = html(nonce);
-  return `<!doctype html>
+export function renderAppShell(
+	companyName: string,
+	nonce: string,
+	accountsEnabled = false,
+): string {
+	const safeCompany = html(companyName);
+	const safeNonce = html(nonce);
+
+	return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">

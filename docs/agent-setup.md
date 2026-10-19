@@ -53,10 +53,10 @@ Hermes reads remote MCP servers from `~/.hermes/config.yaml`, as documented in t
 
 ```yaml
 mcp_servers:
-  panini-example:
-    url: "http://127.0.0.1:4141/mcp"
-    headers:
-      Authorization: "Bearer ${PANINI_AGENT_EXAMPLE_TOKEN}"
+    panini-example:
+        url: "http://127.0.0.1:4141/mcp"
+        headers:
+            Authorization: "Bearer ${PANINI_AGENT_EXAMPLE_TOKEN}"
 ```
 
 Then test the server and start Hermes:

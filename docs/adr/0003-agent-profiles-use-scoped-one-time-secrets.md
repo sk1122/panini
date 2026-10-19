@@ -1,3 +1,0 @@
-# Agent profiles use scoped one-time secrets
-
-Each external harness connects through its own member-owned Agent Profile rather than sharing the workspace administrator credential. An Enrollment Secret is revealed only when the profile is created or rotated, while only its digest is retained. Capability Grants are enforced for every agent operation, and write capabilities still produce proposals or evidence instead of accepted-state mutations. This adds profile and secret lifecycle management, but makes one harness independently attributable and revocable without rotating every other agent or granting it workspace administration.

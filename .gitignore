@@ -14,3 +14,10 @@ backups/*.dump
 # Private source data, replay receipts, generated images and database backups.
 artifacts/
 backups/
+
+# Local credentials, package caches and exports.
+.env.*
+!.env.example
+.pnpm-store/
+*.dump
+*.tgz

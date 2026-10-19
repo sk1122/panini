@@ -1,11 +1,11 @@
 {
-  "mcpServers": {
-    "panini": {
-      "type": "http",
-      "url": "${PANINI_URL}/mcp",
-      "headers": {
-        "Authorization": "Bearer ${PANINI_AGENT_TOKEN}"
-      }
-    }
-  }
+	"mcpServers": {
+		"panini": {
+			"type": "http",
+			"url": "${PANINI_URL}/mcp",
+			"headers": {
+				"Authorization": "Bearer ${PANINI_AGENT_TOKEN}"
+			}
+		}
+	}
 }

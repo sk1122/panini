@@ -1,0 +1,11 @@
+node_modules/
+dist/
+package-assets/
+artifacts/
+backups/
+.pnpm-store/
+.panini/
+.git/
+pnpm-lock.yaml
+drizzle/
+.env*

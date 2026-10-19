@@ -1,5 +1,5 @@
 {
-  "name": "panini",
-  "version": "0.1.0",
-  "description": "Permission-scoped Panini context, evidence receipts, and reviewable work proposals"
+	"name": "panini",
+	"version": "0.1.0",
+	"description": "Permission-scoped Panini context, evidence receipts, and reviewable work proposals"
 }
