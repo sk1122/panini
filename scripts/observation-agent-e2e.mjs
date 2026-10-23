@@ -1,3 +1,4 @@
+import { verifyOntologyBrowser } from "./ontology-browser-e2e.mjs";
 import { runWorkStateProbes } from "./ontology-state-probes.mjs";
 // E2E failures: default routing starts old stages; manual-review startup gate;
 // pending writes; collection-time provenance; unreadable accepted projection; duplicate restart.
@@ -41,6 +42,7 @@ let store;
 let stub;
 let report;
 let stateProbeChecks = [];
+let browserChecks = [];
 let wireContractError = null;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -124,7 +126,7 @@ try {
 		await readFile(path.join(root, "config/panini.example.yaml"), "utf8"),
 	);
 
-	config.intelligence.enabled = false;
+	config.intelligence.enabled = true;
 	config.policy.mode = "autonomous";
 	config.intelligence.evidenceV2 = {
 		pipelineVersion: `process-${suffix}`,
@@ -699,6 +701,8 @@ try {
 		return response.ok;
 	}, "server");
 
+	const password = `Test password ${randomUUID()}!`;
+
 	const bootstrap = await fetch(`${origin}/api/auth/bootstrap`, {
 		method: "POST",
 		headers: { "content-type": "application/json", origin },
@@ -707,7 +711,7 @@ try {
 			companyName: "Example Company",
 			displayName: "Process Reviewer",
 			email: `process-${suffix}@example.test`,
-			password: `Test password ${randomUUID()}!`,
+			password,
 		}),
 	});
 
@@ -1156,6 +1160,102 @@ try {
 				token,
 			});
 
+			if (process.env.PANINI_TEST_BROWSER === "1") {
+				const broadTask = (await store.listTasks()).find(
+					(item) => item.title === "Export and delivery",
+				);
+
+				if (!broadTask) throw new Error("Browser fixture task missing");
+				if (process.env.PANINI_RECORD_DEMO === "1") {
+					const member = (await store.listMembers()).find(
+						(item) =>
+							item.email === `process-${suffix}@example.test`,
+					);
+
+					if (!member) throw new Error("Demo owner missing");
+
+					const enrolled = await post("/api/agents", {
+						memberId: member.id,
+						name: "Release demo agent",
+						capabilities: ["work:read", "context:read"],
+						dataScope: {
+							projects: ["*"],
+							contextPaths: ["/"],
+							sourceVisibilities: ["company"],
+						},
+					});
+					const contextRead = await fetch(`${origin}/mcp`, {
+						method: "POST",
+						headers: {
+							authorization: `Bearer ${enrolled.secret}`,
+							accept: "application/json, text/event-stream",
+							"content-type": "application/json",
+							"mcp-protocol-version": "2025-03-26",
+						},
+						body: JSON.stringify({
+							jsonrpc: "2.0",
+							id: 1,
+							method: "tools/call",
+							params: {
+								name: "context_get",
+								arguments: {
+									objective:
+										"What remains for export and delivery?",
+									taskIds: [broadTask.id],
+								},
+							},
+						}),
+					});
+
+					if (!contextRead.ok)
+						throw new Error("Demo MCP request failed");
+
+					const payload = await contextRead.text();
+					const mcpResult = JSON.parse(
+						!payload.trimStart().startsWith("{")
+							? payload
+									.split("\n")
+									.find((line) => line.startsWith("data:"))
+									.slice(5)
+							: payload,
+					);
+
+					if (
+						mcpResult.result?.isError ||
+						!mcpResult.result?.structuredContent?.pack?.tasks?.some(
+							(item) => item.id === broadTask.id,
+						)
+					)
+						throw new Error(
+							"Demo MCP did not return the scoped task",
+						);
+					await mkdir(path.resolve(".panini/release/demo"), {
+						recursive: true,
+					});
+					await writeFile(
+						path.resolve(".panini/release/demo/mcp-proof.json"),
+						JSON.stringify(
+							{
+								tool: "context_get",
+								taskId: broadTask.id,
+								acceptedPack:
+									mcpResult.result.structuredContent.pack,
+							},
+							null,
+							4,
+						) + "\n",
+					);
+				}
+				browserChecks = await verifyOntologyBrowser({
+					origin,
+					email: `process-${suffix}@example.test`,
+					password,
+					taskId: broadTask.id,
+					output: reportDir,
+					token,
+				});
+			}
+
 			await pool.query(
 				"UPDATE interpretation_runs SET state='completed' WHERE id=$1",
 				[lease.active_run],
@@ -1305,6 +1405,7 @@ try {
 			model: "gpt-6-luna",
 			reasoning: "medium",
 			completionChecks,
+			browserChecks,
 			modelStubCalls: calls,
 			embeddingStubCalls: embeddingCalls,
 			embeddingModel: "voyageai/voyage-4",

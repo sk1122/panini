@@ -1025,6 +1025,37 @@ function renderMappings() {
   byId('repository-mappings').innerHTML = state.mappings.map((mapping) => '<div class="activity-row"><strong>' + esc(mapping.repository) + '</strong><span>' + esc(mapping.project) + ' / ' + mapping.contextPaths.length + ' context paths</span><time>' + esc(formatDate(mapping.updatedAt)) + '</time></div>').join('') || '<div class="empty"><strong>No repository mappings</strong><span>Map repositories so agents receive relevant project context.</span></div>';
 }
 
+async function openTaskDetail(id) {
+  const [detail, workModel] = await Promise.all([
+    api('/api/tasks/' + encodeURIComponent(id)),
+    api('/api/work-model?taskId=' + encodeURIComponent(id))
+  ]);
+  renderTaskDetail({ ...detail, workModel });
+}
+
+function renderWorkModel(model) {
+  if (!model) return '';
+  const scope = model.scope;
+  const current = model.assessments.slice().reverse().find(item => item.appliedVersion === model.task.version && item.scopeId === scope?.id);
+  const labels = { yes: 'Reported performed', no: 'Not performed', uncertain: 'Not established', conflicting: 'Conflicting reports' };
+  const requirements = scope ? '<ol class="work-requirements">' + scope.requiredSteps.map(step => {
+    const assessment = current?.assessment.requirements.find(item => item.id === step.id);
+    return '<li><strong>' + esc(step.description) + '</strong><small>' + esc(assessment ? labels[assessment.performed] : 'Not assessed for the current task version') + '</small><details><summary>Scope evidence</summary><blockquote>' + esc(step.quote) + '</blockquote></details></li>';
+  }).join('') + '</ol><p class="muted-copy">Inferred scope. A scope change needs verified authority.</p>' : '<p class="muted-copy">No inferred scope has been recorded for this task.</p>';
+  const evidence = model.evidence.map(item => {
+    const claim = item.claim.body;
+    const sourceId = claim.spans[0]?.eventId;
+    const reference = item.entity.externalRef && /^https?:\/\//i.test(item.entity.externalRef) ? '<a href="' + esc(item.entity.externalRef) + '" target="_blank" rel="noreferrer">Open artifact</a>' : '';
+    return '<article class="work-evidence"><header><strong>' + esc(item.entity.name) + '</strong><span>' + esc(item.entity.kind === 'execution' ? 'Attempt' : 'Artifact') + '</span></header><p>' + esc(claim.statement) + '</p><small>Source report · ' + esc(claim.assertedValue?.result || 'unknown') + ' · ' + esc(formatDate(claim.assertedAt)) + '</small><small>Task link: ' + esc(item.relationship) + ' · inferred by model</small>' +
+      (item.entity.revision ? '<small>Revision: ' + esc(item.entity.revision) + '</small>' : '') +
+      (item.entity.environment ? '<small>Environment: ' + esc(item.entity.environment) + '</small>' : '') +
+      '<div class="agent-grants">' + (sourceId ? '<button class="button quiet small" data-work-source="' + esc(sourceId) + '">Read source</button>' : '') + reference + '</div></article>';
+  }).join('');
+  return '<section class="work-model" aria-label="Work model"><div class="section-head compact-head"><div><h2>Requested work</h2><p>Original requirements and the latest accepted assessment.</p></div></div>' + requirements +
+    '<div class="section-head compact-head"><div><h2>Attempts and outputs</h2><p>Reports and inferred links are not independent verification.</p></div></div>' + (evidence || '<p class="muted-copy">No linked attempts or artifacts recorded.</p>') +
+    (model.evidence.length === 100 ? '<p class="muted-copy">Showing up to 100 records. More evidence may exist.</p>' : '') + '</section>';
+}
+
 function renderTaskDetail(detail) {
   const task = detail.task;
   const revisions = detail.revisions.slice().reverse().map((revision) => {
@@ -1049,7 +1080,7 @@ function renderTaskDetail(detail) {
         (criterion.evidenceRule.artifactRefs.length ? ' · ' + esc(criterion.evidenceRule.artifactRefs.join(', ')) : '') +
         '</span></div>').join('') + '</div><small>Accepted ' + esc(formatDate(contract.provenance.acceptedAt)) +
       ' by ' + esc(recordedBy(contract.provenance.actor)) + ' · v' + esc(contract.version) + '</small>'
-    : '<p class="muted-copy">No accepted outcome contract. Completion reports need human review.</p>';
+    : '<p class="muted-copy">No reviewer-approved outcome contract. Inferred scope and evidence checks still apply.</p>';
   const contractDraft = canReview() ? '<details class="source-details"><summary>Propose an outcome contract</summary>' +
     '<form id="outcome-contract-form" class="settings-form" data-task-id="' + esc(task.id) + '" data-task-version="' + esc(task.version) + '">' +
     '<div class="field"><label>Outcome statement</label><textarea name="statement" required maxlength="5000">' + esc(contract?.statement || '') + '</textarea></div>' +
@@ -1058,8 +1089,9 @@ function renderTaskDetail(detail) {
     '<div class="field"><label>Criteria JSON</label><textarea name="criteria" required rows="8">' + esc(JSON.stringify(contract?.criteria.map((item) => ({ id: item.id, description: item.description, required: item.required, evidenceRule: item.evidenceRule })) || [], null, 2)) + '</textarea><small>Each criterion needs an id, description, required flag, and evidenceRule. For GitHub merge or deployment checks, include the pull URL and exact 40-character SHA in artifactRefs.</small></div>' +
     '<div class="field"><label>Reason for this contract</label><textarea name="rationale" required maxlength="2000"></textarea></div>' +
     '<button class="button primary" type="submit">Send for review</button></form></details>' : '';
-  byId('task-detail-content').innerHTML = '<div class="detail-head"><div><h2>' + esc(task.title) + '</h2><p>' + esc(task.description || 'No description recorded.') + '</p></div><span class="detail-state">' + esc(task.status.replaceAll('_', ' ')) + '</span></div>' +
-    '<div class="detail-grid"><div><small>Owner</small><span>' + esc(task.owner || 'Unassigned') + '</span></div><div><small>Project</small><span>' + esc(task.project || 'No project') + '</span></div><div><small>Last changed</small><span>' + esc(formatDate(task.updatedAt)) + '</span></div><div><small>Priority</small><span>' + esc(task.priority) + '</span></div><div><small>Dependencies</small><span>' + esc(dependencies) + '</span></div><div><small>Source</small><span>' + (task.sourceUrl ? '<a href="' + esc(task.sourceUrl) + '" target="_blank" rel="noreferrer">Open original</a>' : 'Added in Panini') + '</span></div></div>' +
+  byId('task-detail-content').innerHTML = '<div class="detail-head"><div><h2>' + esc(task.title) + '</h2><p>' + esc(task.description && task.description.length <= 400 ? task.description : 'Requirements and evidence are shown below.') + '</p></div><span class="detail-state">' + esc(task.status.replaceAll('_', ' ')) + '</span></div>' +
+    '<div class="detail-grid"><div><small>Result</small><span>' + esc(task.result || 'unknown') + '</span></div><div><small>Owner</small><span>' + esc(task.owner || 'Unassigned') + '</span></div><div><small>Project</small><span>' + esc(task.project || 'No project') + '</span></div><div><small>Last changed</small><span>' + esc(formatDate(task.updatedAt)) + '</span></div><div><small>Priority</small><span>' + esc(task.priority) + '</span></div><div><small>Dependencies</small><span>' + esc(dependencies) + '</span></div><div><small>Source</small><span>' + (task.sourceUrl ? '<a href="' + esc(task.sourceUrl) + '" target="_blank" rel="noreferrer">Open original</a>' : 'Added in Panini') + '</span></div></div>' +
+    (task.description && task.description.length > 400 ? '<details class="source-details"><summary>Full task description</summary><p class="task-description">' + esc(task.description) + '</p></details>' : '') + renderWorkModel(detail.workModel) +
     '<div class="section-head compact-head"><div><h2>Outcome contract</h2><p>Accepted scope and proof needed for completion.</p></div></div>' + contractView + contractDraft +
     (pending ? '<div class="section-head compact-head"><div><h2>Changes under review</h2><p>The current task has not changed yet.</p></div></div><div class="activity-list">' + pending + '</div>' : '') +
     '<div class="section-head compact-head"><div><h2>Possible linked activity</h2><p>Reference matches are clues. They do not change accepted status.</p></div></div><div class="activity-list">' + (activity || '<div class="empty"><span>No activity with an exact task reference found.</span></div>') + '</div>' + (coverage.bounded ? '<p class="muted-copy">Recent event window reached its limit; older activity may be missing.</p>' : '') +
@@ -1192,12 +1224,19 @@ window.addEventListener('popstate', () => navigate(viewByPath[window.location.pa
 navigate(viewByPath[window.location.pathname] || 'projects', { replace: window.location.pathname === '/app', scroll: false });
 byId('task-suggestions').addEventListener('click', (event) => { if (event.target.closest('[data-go-view="review"]')) navigate('review'); });
 byId('project-suggestions').addEventListener('click', (event) => { if (event.target.closest('[data-go-view="review"]')) navigate('review'); });
+byId('task-detail-content').addEventListener('click', event => {
+  const button = event.target.closest('[data-work-source]');
+  if (!button) return;
+  byId('task-detail-dialog').close();
+  void openEvidence(button.dataset.workSource);
+});
+
 byId('history-filter').addEventListener('change', renderHistory);
 byId('timeline-filter').addEventListener('change', renderTimeline);
 async function openHistorySubject(type, id) {
   if (type === 'context_revision') { navigate('context'); await openContextEntry(id); }
   else if (type === 'task_revision') {
-    try { renderTaskDetail(await api('/api/tasks/' + encodeURIComponent(id))); }
+    try { await openTaskDetail(id); }
     catch (error) { showError(error); }
   }
 }
@@ -1677,7 +1716,7 @@ byId('board').addEventListener('click', async (event) => {
   }
   const card = event.target.closest('[data-task]');
   if (!card) return;
-  try { renderTaskDetail(await api('/api/tasks/' + encodeURIComponent(card.dataset.task))); }
+  try { await openTaskDetail(card.dataset.task); }
   catch (error) { showError(error); }
 });
 
@@ -1804,7 +1843,7 @@ byId('projects').addEventListener('click', async (event) => {
   }
   const task = event.target.closest('[data-task]');
   if (!task) return;
-  try { renderTaskDetail(await api('/api/tasks/' + encodeURIComponent(task.dataset.task))); }
+  try { await openTaskDetail(task.dataset.task); }
   catch (error) { showError(error); }
 });
 
@@ -1812,7 +1851,7 @@ for (const containerId of ['people', 'company-blockers']) {
   byId(containerId).addEventListener('click', async (event) => {
     const task = event.target.closest('[data-task]');
     if (!task) return;
-    try { renderTaskDetail(await api('/api/tasks/' + encodeURIComponent(task.dataset.task))); }
+    try { await openTaskDetail(task.dataset.task); }
     catch (error) { showError(error); }
   });
 }

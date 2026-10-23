@@ -17,6 +17,8 @@ export type AccessScope =
 			memberId: string;
 			agentProfileId: string;
 			dataScope: AgentDataScope;
+			/** Original authenticated grant before repository narrowing. */
+			profileDataScope?: AgentDataScope;
 	  };
 
 export function normalizeContextScope(input: string): string {

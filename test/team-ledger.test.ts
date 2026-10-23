@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProposalPolicy } from "../src/domain/policy.js";
 import { TeamLedger } from "../src/domain/team-ledger.js";
 import type { Observation, TaskFields } from "../src/domain/types.js";
 import { MemoryLedgerStore } from "../src/store/memory.js";
 import { ReplayVerifier } from "../src/replay/verifier.js";
 import { renderContextPackMarkdown } from "../src/retrieval/context-compiler.js";
+
+afterEach(() => vi.useRealTimers());
 
 const baseFields: TaskFields = {
 	externalRef: "notion:page:task-1",
@@ -267,9 +269,12 @@ describe("TeamLedger", () => {
 			owner: "Mateo",
 		};
 
-		const result = await ledger.ingest(
-			taskObservation("snapshot-2", changedFields),
-		);
+		const changedObservation = taskObservation("snapshot-2", changedFields);
+
+		changedObservation.event.occurredAt = "2026-09-12T08:02:00.000Z";
+		changedObservation.event.fetchedAt = "2026-09-12T08:03:00.000Z";
+
+		const result = await ledger.ingest(changedObservation);
 
 		expect(result.proposal).toMatchObject({
 			state: "pending",
@@ -671,7 +676,10 @@ describe("TeamLedger", () => {
 	});
 
 	it("quarantines unsafe context through an immutable lifecycle revision and preserves temporal scope", async () => {
-		const { ledger } = makeLedger();
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(new Date("2026-09-01T00:00:00.000Z"));
+
+		const { ledger, store } = makeLedger();
 		const entry = await ledger.createContextEntry(
 			{
 				kind: "fact",
@@ -686,6 +694,8 @@ describe("TeamLedger", () => {
 			},
 			"user:reviewer",
 		);
+
+		vi.setSystemTime(new Date("2026-09-17T10:00:00.000Z"));
 
 		const alpha = await ledger.retrieve({
 			objective: "Read the Alpha release policy",
@@ -741,9 +751,17 @@ describe("TeamLedger", () => {
 			current: { lifecycleState: "needs_review" },
 		});
 		expect(detail.entry.evidenceIds).toHaveLength(2);
+
+		await store.revokeSourceEvent(entry.evidenceIds[0]!);
+		await expect(ledger.contextDetail(entry.id)).rejects.toThrow(
+			"cannot read this context history",
+		);
 	});
 
 	it("does not retrieve accepted context outside its effective interval", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(new Date("2026-09-01T00:00:00.000Z"));
+
 		const { ledger } = makeLedger();
 
 		await ledger.createContextEntry(
@@ -758,6 +776,8 @@ describe("TeamLedger", () => {
 			},
 			"user:reviewer",
 		);
+
+		vi.setSystemTime(new Date("2026-09-17T10:00:00.000Z"));
 
 		expect(
 			(

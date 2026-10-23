@@ -1,0 +1,31 @@
+1
+00:00:00,053 --> 00:00:06,055
+Work needs context, not just a status.
+
+2
+00:00:06,181 --> 00:00:16,184
+Keep the original requirements visible as work changes.
+
+3
+00:00:16,216 --> 00:00:24,218
+Each requirement retains its supporting source text.
+
+4
+00:00:24,259 --> 00:00:34,261
+The exporter was built. Delivery is still unresolved.
+
+5
+00:00:34,379 --> 00:00:42,380
+Read the source before treating a report as proof.
+
+6
+00:00:42,701 --> 00:00:50,703
+Keep shared context and its change history in one workspace.
+
+7
+00:00:50,748 --> 00:00:58,749
+An enrolled agent reads the same work through scoped MCP access.
+
+8
+00:00:58,805 --> 00:01:05,807
+Panini is open source. Start at github.com/sk1122/panini

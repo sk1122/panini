@@ -1,0 +1,113 @@
+name: Verify
+on:
+    push:
+    pull_request:
+permissions:
+    contents: read
+jobs:
+    release-checks:
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        services:
+            postgres:
+                image: postgres:17-alpine
+                env:
+                    POSTGRES_USER: panini_e2e
+                    POSTGRES_PASSWORD: panini_e2e_disposable_only
+                    POSTGRES_DB: panini_e2e
+                ports:
+                    - 5432:5432
+                options: >-
+                    --health-cmd "pg_isready -U panini_e2e -d panini_e2e"
+                    --health-interval 3s --health-timeout 3s --health-retries 20
+        env:
+            PANINI_TEST_DATABASE_URL: postgres://panini_e2e:panini_e2e_disposable_only@127.0.0.1:5432/panini_e2e
+            PANINI_PRODUCTION_TEST_DATABASE_URL: postgres://panini_e2e:panini_e2e_disposable_only@127.0.0.1:5432/panini_e2e
+            APP_CONFIG_PATH: test/fixtures/production-config.yaml
+            LOG_LEVEL: silent
+            PANINI_AGENT_BROWSER_TEST: "true"
+            PANINI_EVIDENCE_BROWSER_TEST: "true"
+            PANINI_GITHUB_BROWSER_TEST: "true"
+        steps:
+            - uses: actions/checkout@v4
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 10.24.0
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - run: pnpm exec playwright install --with-deps chromium
+            - run: pnpm typecheck && pnpm build && pnpm format:check
+            - name: Migrate disposable database
+              run: node dist/src/db/migrate.js
+              env:
+                  DATABASE_URL: ${{ env.PANINI_TEST_DATABASE_URL }}
+            - name: Run complete test suite
+              run: |
+                  mkdir -p .panini/ci
+                  pnpm exec vitest run --dir test --no-file-parallelism --testTimeout=60000 --reporter=json --outputFile=.panini/ci/tests.json
+            - name: Check server and ontology worker processes
+              run: node scripts/observation-agent-e2e.mjs
+              env:
+                  PANINI_TEST_ONTOLOGY: "1"
+                  PANINI_TEST_BROWSER: "1"
+                  CONTENT_ENCRYPTION_KEY: CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws=
+            - name: Check release package
+              run: node scripts/package-cli-e2e.mjs
+            - name: Start clean installation
+              run: docker compose -p panini-production-e2e -f test/compose.e2e.yaml up -d --build --wait
+            - name: Check browser enrollment and login
+              run: node scripts/production-browser-e2e.mjs
+              env:
+                  PANINI_E2E_BOOTSTRAP_TOKEN: panini_admin_browser_test_disposable_installation_secret
+                  PANINI_E2E_OUTPUT: .panini/ci/browser
+            - name: Check backup and restore
+              run: node scripts/selfhost-e2e.mjs
+            - name: Check first install and upgrade
+              run: node scripts/install-lifecycle-e2e.mjs
+            - name: Stop clean installation
+              if: always()
+              run: docker compose -p panini-production-e2e -f test/compose.e2e.yaml down
+            - uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: verification
+                  path: |
+                      .panini/ci
+                      artifacts/observation-agent/agent-process-e2e-*.json
+                  retention-days: 14
+
+    publish-preview:
+        if: startsWith(github.ref, 'refs/tags/v')
+        needs: release-checks
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/checkout@v4
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 10.24.0
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - name: Build source package
+              run: |
+                  pnpm build
+                  node scripts/prepare-package.mjs
+                  mkdir -p .panini/release-package
+                  npm pack --ignore-scripts --pack-destination .panini/release-package
+            - name: Publish verified preview
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: >-
+                  gh release create "$GITHUB_REF_NAME"
+                  --verify-tag --prerelease
+                  --title "Panini $GITHUB_REF_NAME"
+                  --notes-file media/release-notes.txt
+                  .panini/release-package/*.tgz
+                  media/panini-demo.mp4 media/panini-demo.srt

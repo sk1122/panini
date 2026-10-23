@@ -139,6 +139,51 @@ function latestWorkLinkRevisions(revisions: WorkLinkRevision[]): WorkLink[] {
 	return [...latest.values()].map((revision) => revision.current);
 }
 
+/** Dependency edges are a projection of accepted task fields, not separate decisions. */
+function compareWorkLinks(
+	links: WorkLink[],
+	recorded: WorkLink[],
+	tasks: Task[],
+): ProjectionVerification {
+	const linkKey = (
+		link: Pick<WorkLink, "taskId" | "linkType" | "targetRef">,
+	) => JSON.stringify([link.taskId, link.linkType, link.targetRef]);
+
+	const recordedKeys = new Set(recorded.map(linkKey));
+	const taskByRef = new Map(
+		tasks
+			.filter((task) => task.externalRef)
+			.map((task) => [task.externalRef, task]),
+	);
+	const derived = tasks.flatMap((task) =>
+		[...new Set(task.dependencyRefs)]
+			.filter((ref) => ref !== task.externalRef)
+			.map((targetRef) => ({
+				taskId: task.id,
+				linkType: "depends_on" as const,
+				targetRef,
+				targetTaskId: taskByRef.get(targetRef)?.id ?? null,
+			}))
+			.filter((link) => !recordedKeys.has(linkKey(link)))
+			.map((link) => ({ ...link, id: `derived:${linkKey(link)}` })),
+	);
+	const expectedKeys = new Set(derived.map(linkKey));
+	const recordedIds = new Set(recorded.map((link) => link.id));
+	const actual = links.map((link) =>
+		!recordedIds.has(link.id) && expectedKeys.has(linkKey(link))
+			? {
+					id: `derived:${linkKey(link)}`,
+					taskId: link.taskId,
+					linkType: link.linkType,
+					targetRef: link.targetRef,
+					targetTaskId: link.targetTaskId,
+				}
+			: link,
+	);
+
+	return compareProjection(actual, [...recorded, ...derived]);
+}
+
 export class ReplayVerifier {
 	constructor(private readonly store: LedgerStore) {}
 
@@ -174,9 +219,10 @@ export class ReplayVerifier {
 		);
 		const taskResult = compareProjection(tasks, replayedTasks);
 		const contextResult = compareProjection(context, replayedContext);
-		const linkResult = compareProjection(
+		const linkResult = compareWorkLinks(
 			links,
 			latestWorkLinkRevisions(linkRevisions),
+			replayedTasks,
 		);
 		const verification = {
 			ok: taskResult.ok && contextResult.ok && linkResult.ok,
@@ -205,7 +251,7 @@ export class ReplayVerifier {
 			...before.context.unexpectedInProjection,
 			...before.links.unexpectedInProjection,
 		];
-		const eligible = unexpected.length === 0 && before.links.ok;
+		const eligible = unexpected.length === 0;
 
 		if (!input.apply) {
 			return {

@@ -9224,7 +9224,7 @@ export class PostgresLedgerStore implements LedgerStore {
 				[`${this.organizationId}:projection-rebuild`],
 			);
 			await client.query(
-				"LOCK TABLE task_revisions, context_revisions, tasks, context_entries, projects, workstreams, work_links IN SHARE ROW EXCLUSIVE MODE",
+				"LOCK TABLE task_revisions, context_revisions, tasks, context_entries, projects, workstreams, work_links, work_link_revisions IN SHARE ROW EXCLUSIVE MODE",
 			);
 			await client.query(
 				"CREATE TEMP TABLE replay_tasks_shadow (id uuid PRIMARY KEY, current jsonb NOT NULL) ON COMMIT DROP",
@@ -9322,9 +9322,30 @@ export class PostgresLedgerStore implements LedgerStore {
 				[this.organizationId],
 			);
 			await client.query(
-				"DELETE FROM work_links WHERE organization_id=$1",
+				"DELETE FROM work_links WHERE organization_id=$1 AND NOT EXISTS (SELECT 1 FROM work_link_revisions r WHERE r.link_id=work_links.id)",
 				[this.organizationId],
 			);
+
+			const recordedLinks = await client.query<{ current: WorkLink }>(
+				"SELECT DISTINCT ON (link_id) current FROM work_link_revisions WHERE organization_id=$1 ORDER BY link_id,version DESC",
+				[this.organizationId],
+			);
+
+			for (const { current: link } of recordedLinks.rows) {
+				await client.query(
+					"INSERT INTO work_links (id,organization_id,task_id,target_task_id,target_ref,link_type,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO UPDATE SET task_id=excluded.task_id,target_task_id=excluded.target_task_id,target_ref=excluded.target_ref,link_type=excluded.link_type,created_at=excluded.created_at,updated_at=excluded.updated_at",
+					[
+						link.id,
+						this.organizationId,
+						link.taskId,
+						link.targetTaskId,
+						link.targetRef,
+						link.linkType,
+						link.createdAt,
+						link.updatedAt,
+					],
+				);
+			}
 			for (const task of input.tasks)
 				await this.projectAcceptedTask(client, task);
 			await client.query(
@@ -9600,7 +9621,7 @@ export class PostgresLedgerStore implements LedgerStore {
 		task: Task,
 	): Promise<void> {
 		await client.query(
-			"DELETE FROM work_links WHERE organization_id=$1 AND task_id=$2",
+			"DELETE FROM work_links WHERE organization_id=$1 AND task_id=$2 AND NOT EXISTS (SELECT 1 FROM work_link_revisions r WHERE r.link_id=work_links.id)",
 			[this.organizationId, task.id],
 		);
 		for (const targetRef of [...new Set(task.dependencyRefs)]) {
@@ -9614,14 +9635,16 @@ export class PostgresLedgerStore implements LedgerStore {
            $4,'depends_on'
          )
          ON CONFLICT (task_id, target_ref, link_type) DO UPDATE SET
-           target_task_id=excluded.target_task_id, updated_at=now()`,
+           target_task_id=excluded.target_task_id, updated_at=now()
+         WHERE NOT EXISTS (SELECT 1 FROM work_link_revisions r WHERE r.link_id=work_links.id)`,
 				[randomUUID(), this.organizationId, task.id, targetRef],
 			);
 		}
 		if (task.externalRef) {
 			await client.query(
 				`UPDATE work_links SET target_task_id=$3, updated_at=now()
-          WHERE organization_id=$1 AND target_ref=$2 AND task_id<>$3`,
+          WHERE organization_id=$1 AND target_ref=$2 AND task_id<>$3
+          AND NOT EXISTS (SELECT 1 FROM work_link_revisions r WHERE r.link_id=work_links.id)`,
 				[this.organizationId, task.externalRef, task.id],
 			);
 		}

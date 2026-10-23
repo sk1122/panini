@@ -960,7 +960,7 @@ export class PostgresContextCompiler implements ContextRetriever {
 				(input.includeSources &&
 					!profile.capabilities.includes("source:read")) ||
 				JSON.stringify(profile.dataScope) !==
-					JSON.stringify(access.dataScope)
+					JSON.stringify(access.profileDataScope ?? access.dataScope)
 			) {
 				throw new DomainError(
 					"Agent access changed during retrieval.",
@@ -1347,16 +1347,18 @@ export class PostgresContextCompiler implements ContextRetriever {
 					(() => {
 						const current = currentEntryById.get(entry.id)!;
 
-						return canRecallContextEntry(
-							access,
-							current,
-							current.evidenceIds.flatMap((id) => {
-								const event =
-									currentReauthorizationById.get(id);
+						return (
+							current.lifecycleState === "accepted" &&
+							canReadContextEntry(
+								access,
+								current,
+								current.evidenceIds.flatMap((id) => {
+									const event =
+										currentReauthorizationById.get(id);
 
-								return event ? [event] : [];
-							}),
-							new Date().toISOString(),
+									return event ? [event] : [];
+								}),
+							)
 						);
 					})()),
 		);

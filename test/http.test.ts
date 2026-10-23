@@ -299,14 +299,14 @@ describe("HTTP server", () => {
 				const member = await ledger.syncMember(
 					{
 						subject: `workspace-test:${randomUUID()}`,
-						displayName: "Workspace Owner",
+						displayName: `Workspace Owner ${randomUUID()}`,
 					},
 					"test",
 				);
 				const other = await ledger.syncMember(
 					{
 						subject: `workspace-test:${randomUUID()}`,
-						displayName: "Other Owner",
+						displayName: `Other Owner ${randomUUID()}`,
 					},
 					"test",
 				);
@@ -1946,6 +1946,34 @@ describe("HTTP server", () => {
 
 		expect(unmapped.message.result.isError).toBe(true);
 		expect(unmapped.message.result.content[0].text).toContain("not mapped");
+
+		const authenticated = await ledger.authenticateAgentSecret(
+			created.json().secret,
+		);
+
+		expect(authenticated).not.toBeNull();
+
+		const narrowed = await ledger.accessForRepository("acme/alpha", {
+			kind: "agent",
+			organizationId: authenticated!.member.organizationId,
+			memberId: authenticated!.member.id,
+			agentProfileId: authenticated!.profile.id,
+			dataScope: authenticated!.profile.dataScope,
+		});
+
+		await ledger.updateAgentDataScope(authenticated!.profile.id, {
+			projects: ["Beta"],
+			contextPaths: ["/projects/beta"],
+			sourceVisibilities: ["company"],
+		});
+		await expect(
+			ledger.retrieve({
+				objective: "Find the release gate",
+				query: "release gate",
+				project: "Alpha",
+				access: narrowed.access,
+			}),
+		).rejects.toThrow("Agent access changed during retrieval");
 	});
 
 	it("creates a Hermes profile with a secret-free YAML connection recipe", async () => {

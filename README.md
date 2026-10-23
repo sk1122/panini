@@ -2,7 +2,13 @@
 
 Company memory for people and agents. Panini turns observations from connected tools into tasks, shared context, and a history of changes, with evidence attached.
 
+[![Verify](https://github.com/sk1122/panini/actions/workflows/verify.yml/badge.svg)](https://github.com/sk1122/panini/actions/workflows/verify.yml)
+
 Use the web app to review work. Use MCP to give an agent access to the same company context through a scoped profile.
+
+[![Watch the product demo](media/panini-demo.png)](https://github.com/sk1122/panini/blob/main/media/panini-demo.mp4)
+
+[Watch the 66-second demo](https://github.com/sk1122/panini/blob/main/media/panini-demo.mp4) · [Captions](media/panini-demo.srt). Recorded in the real local app with fictional data and simulated model responses. The demo agent makes a real scoped MCP request.
 
 ## What it does
 
@@ -37,6 +43,8 @@ Panini connects five parts of company work:
 | Evidence assertion    | What a source actually reported, with exact supporting text |
 | Assessment and review | Whether the evidence permits a change or needs human review |
 
+Open a task to inspect its requested work, linked attempts and outputs, reported result, and original source. Long descriptions remain available without hiding the work requirements.
+
 Relationships connect attempts, outputs, supporting evidence, and conflicting reports. Source identity and authority are separate: a message that claims a requirement was removed cannot approve that change on its own.
 
 Work completion and result are also separate. A finished investigation can have an unknown result. A completed experiment can have a failed result. Partial implementation does not complete a task whose remaining requirements lack evidence.
@@ -50,7 +58,7 @@ Panini is under development. New installations keep connectors and provider proc
 Requirements: Node.js 22 or later, Docker with Compose v2, and persistent disk space.
 
 ```sh
-git clone git@github.com:sk1122/panini.git
+git clone https://github.com/sk1122/panini.git
 cd panini
 node scripts/selfhost.mjs init --url http://127.0.0.1:4141
 node scripts/selfhost.mjs doctor
@@ -134,7 +142,7 @@ pnpm test
 pnpm format:check
 ```
 
-The full Vitest suite is not currently green. Some integration tests also require a disposable database or service. See [current verification results](docs/production-verification.md#repository-check-on-2026-10-20) and check environment requirements before running them.
+The database-backed suite requires a disposable PostgreSQL database; browser tests also need Chromium. The complete configured suite passes locally (299 tests, including all browser tests). See [repeatable verification](docs/production-verification.md) for the environment and commands. These are fixture checks, not live provider accuracy results.
 
 The process E2E check starts separate server and worker processes with local provider stubs. It checks accepted writes, source time, and restart behavior, and saves a JSON receipt under `artifacts/observation-agent/`.
 

@@ -20,6 +20,7 @@ import { ContinuousReconciliationLoop } from "../src/reconciliation/continuous-r
 const databaseUrl = process.env.PANINI_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const { Pool } = pg;
+const suiteOrganizationId = randomUUID();
 const testEncryptionKey = Buffer.alloc(32, 7).toString("base64");
 
 integration("PostgreSQL ledger", () => {
@@ -27,8 +28,21 @@ integration("PostgreSQL ledger", () => {
 	let ledger: TeamLedger;
 	let pool: pg.Pool;
 
-	beforeAll(() => {
-		store = new PostgresLedgerStore(databaseUrl!, testEncryptionKey);
+	beforeAll(async () => {
+		pool = new Pool({ connectionString: databaseUrl });
+		await pool.query(
+			"INSERT INTO organizations (id,slug,name) VALUES ($1,$2,$3)",
+			[
+				suiteOrganizationId,
+				`postgres-suite-${suiteOrganizationId}`,
+				"Postgres E2E",
+			],
+		);
+		store = new PostgresLedgerStore(
+			databaseUrl!,
+			testEncryptionKey,
+			suiteOrganizationId,
+		);
 		ledger = new TeamLedger(
 			store,
 			new ProposalPolicy({
@@ -37,7 +51,6 @@ integration("PostgreSQL ledger", () => {
 				requireReviewForTaskChanges: true,
 			}),
 		);
-		pool = new Pool({ connectionString: databaseUrl });
 	});
 
 	afterAll(async () => {
@@ -303,6 +316,7 @@ integration("PostgreSQL ledger", () => {
 		const wrongKeyStore = new PostgresLedgerStore(
 			databaseUrl!,
 			Buffer.alloc(32, 9).toString("base64"),
+			suiteOrganizationId,
 		);
 
 		try {
@@ -970,6 +984,7 @@ integration("PostgreSQL ledger", () => {
 		const competingStore = new PostgresLedgerStore(
 			databaseUrl!,
 			testEncryptionKey,
+			suiteOrganizationId,
 		);
 		const leaseKey = `integration-lease:${marker}`;
 
@@ -998,6 +1013,29 @@ integration("PostgreSQL ledger", () => {
 			await competingStore.close();
 		}
 
+		const recordedLink = await store.upsertWorkLink({
+			taskId: dependent.id,
+			targetTaskId: prerequisite.id,
+			targetRef: `release-artifact:${marker}`,
+			linkType: "relates_to",
+			changedBy: "user:postgres-graph",
+		});
+		const priorityChange = await ledger.propose({
+			taskId: dependent.id,
+			changes: { priority: "high" },
+			rationale: "Prioritize release verification.",
+			requestedBy: "user:postgres-graph",
+		});
+
+		await ledger.approveProposal(
+			priorityChange.id,
+			"user:postgres-graph",
+			"Prioritized.",
+		);
+		expect(await store.listWorkLinks(dependent.id)).toContainEqual(
+			recordedLink,
+		);
+
 		const replay = new ReplayVerifier(store);
 
 		expect(
@@ -1010,6 +1048,17 @@ integration("PostgreSQL ledger", () => {
 			eligible: true,
 			before: { ok: true },
 		});
+		await pool.query(
+			"UPDATE work_links SET target_task_id=NULL WHERE id=$1",
+			[recordedLink.id],
+		);
+		expect(
+			await replay.rebuild({
+				apply: false,
+				actor: "test:repair-preview",
+			}),
+		).toMatchObject({ eligible: true, before: { ok: false } });
+
 		expect(
 			await replay.rebuild({
 				apply: true,
@@ -1019,6 +1068,9 @@ integration("PostgreSQL ledger", () => {
 			applied: true,
 			after: { ok: true },
 		});
+		expect(await store.listWorkLinks(dependent.id)).toContainEqual(
+			recordedLink,
+		);
 		expect(await store.listAuditEvents(1_000)).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
@@ -1027,6 +1079,23 @@ integration("PostgreSQL ledger", () => {
 				}),
 			]),
 		);
+
+		const unknownId = randomUUID();
+
+		await pool.query(
+			"INSERT INTO work_links (id,organization_id,task_id,target_ref,link_type) SELECT $1,organization_id,$2,$3,'relates_to' FROM tasks WHERE id=$2",
+			[unknownId, dependent.id, `unrecorded:${marker}`],
+		);
+		try {
+			expect(
+				await replay.rebuild({ apply: false, actor: "test:guard" }),
+			).toMatchObject({ eligible: false });
+			await expect(
+				replay.rebuild({ apply: true, actor: "test:guard" }),
+			).rejects.toThrow("without immutable revision history");
+		} finally {
+			await pool.query("DELETE FROM work_links WHERE id=$1", [unknownId]);
+		}
 	});
 
 	it("selects Notion source documents for interpretation without selecting task snapshots", async () => {

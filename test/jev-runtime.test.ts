@@ -5,6 +5,7 @@ import { ReplayVerifier } from "../src/replay/verifier.js";
 import { createPaniniCore } from "../src/runtime/core.js";
 
 const previous = {
+	appConfigPath: process.env.APP_CONFIG_PATH,
 	retrievalProvider: process.env.RETRIEVAL_PROVIDER,
 	openrouterApiKey: process.env.OPENROUTER_API_KEY,
 	typesafeApiKey: process.env.TYPESAFE_API_KEY,
@@ -15,6 +16,7 @@ const previous = {
 
 afterEach(() => {
 	for (const [key, value] of Object.entries({
+		APP_CONFIG_PATH: previous.appConfigPath,
 		RETRIEVAL_PROVIDER: previous.retrievalProvider,
 		OPENROUTER_API_KEY: previous.openrouterApiKey,
 		TYPESAFE_API_KEY: previous.typesafeApiKey,
@@ -30,6 +32,7 @@ afterEach(() => {
 
 describe("Jev main runtime wiring", () => {
 	it("constructs the proposal-fit classifier from the normal Jev configuration", async () => {
+		process.env.APP_CONFIG_PATH = "test/fixtures/legacy-config.yaml";
 		process.env.OPENROUTER_API_KEY = "test-only";
 		delete process.env.TYPESAFE_API_KEY;
 		process.env.JEV_WORK_ALLOWED_VISIBILITIES = "company";
@@ -123,6 +126,7 @@ describe("Jev main runtime wiring", () => {
 
 	it("serves a Jev-ranked context pack through the real HTTP route", async () => {
 		process.env.RETRIEVAL_PROVIDER = "jev";
+		process.env.APP_CONFIG_PATH = "test/fixtures/legacy-config.yaml";
 		process.env.OPENROUTER_API_KEY = "test-only";
 		delete process.env.TYPESAFE_API_KEY;
 		process.env.APP_ADMIN_TOKEN = "test-admin";

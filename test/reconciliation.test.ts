@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProposalPolicy } from "../src/domain/policy.js";
 import { TeamLedger } from "../src/domain/team-ledger.js";
 import { JevWorkJudge } from "../src/reconciliation/jev-work-judge.js";
@@ -8,6 +8,13 @@ import {
 	eligibleWorkSignal,
 } from "../src/reconciliation/work-suggestions.js";
 import { MemoryLedgerStore } from "../src/store/memory.js";
+
+beforeEach(() => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(new Date("2026-09-20T01:00:00.000Z"));
+});
+
+afterEach(() => vi.useRealTimers());
 
 function setup() {
 	const store = new MemoryLedgerStore();

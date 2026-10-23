@@ -651,4 +651,14 @@ button.company-row { cursor: pointer; }.company-row:last-child { border-bottom: 
 @media (prefers-reduced-motion: reduce) {
   *, *:before, *:after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
 }
+
+.work-model { margin: 20px 0; }
+.work-requirements { padding-left: 22px; }
+.work-requirements li { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.work-requirements small, .work-evidence small { display: block; color: var(--muted); margin-top: 5px; }
+.work-requirements blockquote { margin: 8px 0; color: var(--muted); overflow-wrap: anywhere; }
+.work-evidence { padding: 14px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.work-evidence header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.work-evidence header span { color: var(--muted); font-size: 11px; }
+.work-evidence p, .task-description { white-space: pre-wrap; overflow-wrap: anywhere; }
 `;

@@ -1,0 +1,10 @@
+company:
+    name: Test Company
+notion:
+    enabled: false
+intelligence:
+    enabled: false
+    evidenceV2:
+        mode: legacy
+adjudication:
+    enabled: false

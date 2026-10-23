@@ -110,8 +110,9 @@ const workerConfig = workerConfigSchema.parse({
 const workerId =
 	process.env.PANINI_WORKER_ID || `worker:${hostname()}:${process.pid}`;
 const evidenceMode = evidencePipelineMode(config.app);
-const evidenceV2Enabled = evidenceMode !== "legacy";
-const observationAgentEnabled = evidenceMode === "agent";
+const evidenceV2Enabled =
+	config.app.intelligence.enabled && evidenceMode !== "legacy";
+const observationAgentEnabled = evidenceV2Enabled && evidenceMode === "agent";
 const evidenceBudgetId = process.env.PANINI_EVIDENCE_V2_BUDGET_ID;
 const evidenceVersion =
 	process.env.PANINI_EVIDENCE_V2_VERSION ??

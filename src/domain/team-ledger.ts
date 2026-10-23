@@ -1168,6 +1168,7 @@ export class TeamLedger {
 			mapping,
 			access: {
 				...access,
+				profileDataScope: access.profileDataScope ?? access.dataScope,
 				dataScope: {
 					...access.dataScope,
 					projects: [mapping.project],
@@ -2361,14 +2362,16 @@ export class TeamLedger {
 			);
 
 		const now = new Date().toISOString();
+		const receiptKey = input.clientEventId ?? randomUUID();
 		const receipt = await this.store.appendSourceEvent({
 			provider: "manual",
 			installationKey: actor,
-			providerEventId: input.clientEventId ?? randomUUID(),
+			providerEventId: receiptKey,
 			eventKind: "context.lifecycle.reviewed",
 			occurredAt: now,
 			fetchedAt: now,
-			sourceRef: entry.sourceRef,
+			// A lifecycle decision is a new receipt, not a replacement of the original source.
+			sourceRef: `${entry.sourceRef}:lifecycle:${receiptKey}`,
 			sourceUrl: entry.sourceUrl,
 			contentHash: contentHash({
 				contextEntryId: entry.id,

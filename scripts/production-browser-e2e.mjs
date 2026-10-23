@@ -102,9 +102,6 @@ try {
 		.click();
 	await page.getByLabel("Agent name", { exact: true }).fill("Browser Agent");
 	await page
-		.getByLabel("Harness", { exact: true })
-		.selectOption("generic_mcp");
-	await page
 		.getByRole("button", { name: "Create and connect", exact: true })
 		.click();
 	await page

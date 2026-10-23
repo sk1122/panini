@@ -5166,6 +5166,13 @@ export class MemoryLedgerStore implements LedgerStore {
 		for (const entry of input.context)
 			this.contextBySourceRef.set(entry.sourceRef, copy(entry));
 		this.workLinks.clear();
+		for (const revisions of this.workLinkRevisions.values()) {
+			const latest = revisions.toSorted(
+				(a, b) => b.version - a.version,
+			)[0];
+
+			if (latest) this.workLinks.set(latest.linkId, copy(latest.current));
+		}
 		for (const task of input.tasks) this.projectAcceptedTask(task);
 		this.audits.push({
 			id: randomUUID(),
@@ -5185,14 +5192,24 @@ export class MemoryLedgerStore implements LedgerStore {
 		const now = new Date().toISOString();
 
 		for (const [id, link] of this.workLinks) {
-			if (link.taskId === task.id) this.workLinks.delete(id);
+			if (link.taskId === task.id && !this.workLinkRevisions.has(id))
+				this.workLinks.delete(id);
 		}
 		for (const targetRef of [...new Set(task.dependencyRefs)]) {
 			const target = [...this.tasks.values()].find(
 				(candidate) => candidate.externalRef === targetRef,
 			);
 
-			if (target?.id === task.id) continue;
+			if (
+				target?.id === task.id ||
+				[...this.workLinks.values()].some(
+					(link) =>
+						link.taskId === task.id &&
+						link.linkType === "depends_on" &&
+						link.targetRef === targetRef,
+				)
+			)
+				continue;
 
 			const link: WorkLink = {
 				id: randomUUID(),
@@ -5211,7 +5228,8 @@ export class MemoryLedgerStore implements LedgerStore {
 			for (const [id, link] of this.workLinks) {
 				if (
 					link.targetRef === task.externalRef &&
-					link.targetTaskId !== task.id
+					link.targetTaskId !== task.id &&
+					!this.workLinkRevisions.has(id)
 				) {
 					this.workLinks.set(id, {
 						...link,

@@ -1,0 +1,18 @@
+Panini developer preview
+
+Company memory that connects work to its evidence.
+
+This preview includes:
+- Requested work, execution attempts, artifacts, and source-linked evidence.
+- Task views that separate status from reported result and preserve original requirements.
+- Scoped MCP access for employee-owned agents.
+- Docker setup, account enrollment, provider budgets, and backup/restore tools.
+- A captioned 66-second demo using fictional data and local provider stubs.
+
+Verification:
+299 database-backed and browser tests pass locally. Separate server/worker checks verify the default ontology, restart behavior, source access, and mobile task detail. The release workflow verifies installation, package contents, and recovery before publishing the preview. Inspect the workflow result for this tag.
+
+Start with README.md. Provider processing is disabled until configured.
+
+Limits:
+This is a developer preview. Local fixtures do not prove semantic accuracy on unseen companies, complete company coverage, live connector permissions, or hosted-service availability. The video has captions and no voice track.

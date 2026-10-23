@@ -9,9 +9,27 @@ import {
 import type { SourceDocumentReader } from "../src/retrieval/source-document-library.js";
 import { MemoryLedgerStore } from "../src/store/memory.js";
 
-function sourceSummary(index: number): SourceDocumentSummary {
+async function sourceSummary(
+	store: MemoryLedgerStore,
+	index: number,
+): Promise<SourceDocumentSummary> {
+	const { event } = await store.appendSourceEvent({
+		provider: "notion",
+		installationKey: "budget-test",
+		providerEventId: `source-${index}`,
+		eventKind: "page.retrieved",
+		sourceRef: `notion:source-${index}`,
+		sourceUrl: null,
+		occurredAt: "2026-09-18T00:00:00.000Z",
+		fetchedAt: "2026-09-18T00:00:01.000Z",
+		visibility: "company",
+		contentHash: `hash-${index}`,
+		payloadVersion: "test",
+		payload: { text: "Architecture source" },
+	});
+
 	return {
-		sourceEventId: `source-${index}`,
+		sourceEventId: event.id,
 		provider: "notion",
 		sourceRef: `notion:source-${index}`,
 		sourceUrl: null,
@@ -21,7 +39,7 @@ function sourceSummary(index: number): SourceDocumentSummary {
 		contentHash: `hash-${index}`,
 		occurredAt: "2026-09-18T00:00:00.000Z",
 		fetchedAt: "2026-09-18T00:00:01.000Z",
-		receivedAt: "2026-09-18T00:00:02.000Z",
+		receivedAt: event.receivedAt,
 		visibility: "company",
 		characterCount: 30_000,
 		sections: Array.from({ length: 40 }, (_, section) => ({
@@ -88,8 +106,10 @@ describe("agent context pack budget", () => {
 		const store = new MemoryLedgerStore();
 		const sourceDocuments: SourceDocumentReader = {
 			async list() {
-				return Array.from({ length: 8 }, (_, index) =>
-					sourceSummary(index),
+				return Promise.all(
+					Array.from({ length: 8 }, (_, index) =>
+						sourceSummary(store, index),
+					),
 				);
 			},
 			async read() {
@@ -194,8 +214,10 @@ describe("agent context pack budget", () => {
 		const store = new MemoryLedgerStore();
 		const sourceDocuments: SourceDocumentReader = {
 			async list() {
-				return Array.from({ length: 8 }, (_, index) =>
-					sourceSummary(index),
+				return Promise.all(
+					Array.from({ length: 8 }, (_, index) =>
+						sourceSummary(store, index),
+					),
 				);
 			},
 			async read() {
