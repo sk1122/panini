@@ -6,9 +6,9 @@ Company memory for people and agents. Panini turns observations from connected t
 
 Use the web app to review work. Use MCP to give an agent access to the same company context through a scoped profile.
 
-[![Watch the product demo](media/panini-demo.png)](https://github.com/sk1122/panini/blob/main/media/panini-demo.mp4)
+[![Download the product demo](media/panini-demo.png)](https://github.com/sk1122/panini/raw/refs/heads/main/media/panini-demo.mp4)
 
-[Watch the 66-second demo](https://github.com/sk1122/panini/blob/main/media/panini-demo.mp4) · [Captions](media/panini-demo.srt). Recorded in the real local app with fictional data and simulated model responses. The demo agent makes a real scoped MCP request.
+[Download the 66-second MP4 demo](https://github.com/sk1122/panini/raw/refs/heads/main/media/panini-demo.mp4) · [Captions](media/panini-demo.srt). Recorded in the real local app with fictional data and simulated model responses. The demo agent makes a real scoped MCP request.
 
 ## What it does
 
