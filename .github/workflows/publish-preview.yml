@@ -1,0 +1,75 @@
+name: Publish verified preview
+on:
+    push:
+        branches: [main]
+        paths: [.github/preview-release.json]
+    workflow_dispatch:
+permissions:
+    contents: write
+    actions: read
+jobs:
+    publish:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        env:
+            GH_TOKEN: ${{ github.token }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+            - name: Require completed verification of the exact tag commit
+              id: verified
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  tag=$(node -p "require('./.github/preview-release.json').tag")
+                  commit=$(node -p "require('./.github/preview-release.json').commit")
+                  run=$(node -p "require('./.github/preview-release.json').verificationRun")
+                  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]]
+                  [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+                  [[ "$run" =~ ^[0-9]+$ ]]
+                  test "$(git rev-list -n 1 "$tag")" = "$commit"
+                  gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" > "$RUNNER_TEMP/verified-run.json"
+                  COMMIT="$commit" node --input-type=module -e '
+                    import fs from "node:fs";
+                    const r = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/verified-run.json", "utf8"));
+                    if (r.status !== "completed" || r.conclusion !== "success" || r.head_sha !== process.env.COMMIT || r.repository.full_name !== process.env.GITHUB_REPOSITORY || r.path !== ".github/workflows/verify.yml" || r.event !== "push" || r.head_branch !== "main") throw Error("Exact-source verification is not proven");
+                    console.log("Verified source:", r.head_sha, "by", r.html_url);
+                  '
+                  echo "tag=$tag" >> "$GITHUB_OUTPUT"
+                  echo "commit=$commit" >> "$GITHUB_OUTPUT"
+                  echo "verification_run=$run" >> "$GITHUB_OUTPUT"
+                  git checkout --detach "$commit"
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 10.24.0
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - name: Build the verified source package
+              run: |
+                  pnpm build
+                  node scripts/prepare-package.mjs
+                  mkdir -p .panini/release-package
+                  npm pack --ignore-scripts --pack-destination .panini/release-package
+                  (cd .panini/release-package && sha256sum *.tgz) > .panini/release-package/SHA256SUMS
+                  (cd media && sha256sum panini-demo.mp4 panini-demo.srt) >> .panini/release-package/SHA256SUMS
+            - name: Publish the preview
+              env:
+                  TAG: ${{ steps.verified.outputs.tag }}
+              run: |
+                  if gh release view "$TAG" >/dev/null 2>&1; then
+                      echo "Release already exists; public assets will be verified separately."
+                  else
+                      cp media/release-notes.txt "$RUNNER_TEMP/release-notes.txt"
+                      printf '\nVerified source commit: %s\nFull verification: %s\n' \
+                        "${{ steps.verified.outputs.commit }}" \
+                        "https://github.com/$GITHUB_REPOSITORY/actions/runs/${{ steps.verified.outputs.verification_run }}" \
+                        >> "$RUNNER_TEMP/release-notes.txt"
+                      gh release create "$TAG" --verify-tag --prerelease \
+                        --title "Panini $TAG" --notes-file "$RUNNER_TEMP/release-notes.txt" \
+                        .panini/release-package/*.tgz .panini/release-package/SHA256SUMS \
+                        media/panini-demo.mp4 media/panini-demo.srt
+                  fi
