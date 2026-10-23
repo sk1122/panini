@@ -1,4 +1,4 @@
-# Panini
+# <img src="public/panini-mark.svg" alt="Panini logo" width="36" height="36" align="absmiddle"> Panini
 
 Company memory for people and agents. Panini turns observations from connected tools into tasks, shared context, and a history of changes, with evidence attached.
 
