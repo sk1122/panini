@@ -22,7 +22,23 @@ const selfhostCommands = new Set([
 const command = process.argv[2];
 
 if (command === "selfhost") process.argv.splice(2, 1);
-if (["--version", "-v"].includes(command)) {
+if (["--help", "-h", "help"].includes(command)) {
+	console.log(`Panini ${manifest.version}: memory and a work ledger for your agents.
+
+Usage:
+  npx panini-work                 Start Panini with a demo company (no Docker, no API key)
+  npx panini-work --empty         Start with no demo data
+  npx panini-work connect --url <url>
+                                  Connect Claude Code or another agent
+  npx panini-work selfhost init   Set up a Docker self-hosted install
+
+Options for start:
+  --port <port>                   Web port (default 4141)
+  --directory <dir>               Where data is kept (default ./.panini/quickstart)
+  --database-url <url>            Use an existing PostgreSQL instead of the embedded one
+
+  --version                       Print the version`);
+} else if (["--version", "-v"].includes(command)) {
 	console.log(manifest.version);
 } else if (command === "connect") {
 	process.argv.splice(2, 1);
