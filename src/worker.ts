@@ -1,3 +1,7 @@
+import {
+	claudeFetcher,
+	isClaudeModel,
+} from "./intelligence/claude-responses.js";
 import { hostname } from "node:os";
 import { writeFile } from "node:fs/promises";
 import { z } from "zod";
@@ -88,7 +92,7 @@ if (
 		!config.jevWorkAllowedVisibilities.length)
 ) {
 	throw new Error(
-		"The observation agent needs INTELLIGENCE_API_KEY, a model with known prices (gpt-6-luna, or INTELLIGENCE_PRICE_INPUT_PER_MILLION and INTELLIGENCE_PRICE_OUTPUT_PER_MILLION), PANINI_EVIDENCE_V2_BUDGET_ID, PANINI_EVIDENCE_V2_VERSION and JEV_WORK_ALLOWED_VISIBILITIES.",
+		"The observation agent needs INTELLIGENCE_API_KEY, a model with known prices (gpt-6-luna, claude-haiku-5-5, or INTELLIGENCE_PRICE_INPUT_PER_MILLION and INTELLIGENCE_PRICE_OUTPUT_PER_MILLION), PANINI_EVIDENCE_V2_BUDGET_ID, PANINI_EVIDENCE_V2_VERSION and JEV_WORK_ALLOWED_VISIBILITIES.",
 	);
 }
 if (observationAgentEnabled) {
@@ -241,6 +245,10 @@ const observationAgent = observationAgentEnabled
 			allowedVisibilities: config.jevWorkAllowedVisibilities,
 			priceBasis: priceBasisFor(config.intelligenceModel!)!,
 			baseUrl: config.intelligenceBaseUrl,
+			// Claude models go through the Claude adapter (Messages API).
+			...(isClaudeModel(config.intelligenceModel)
+				? { fetcher: claudeFetcher(config.intelligenceApiKey!) }
+				: {}),
 			maxContextEvents:
 				config.app.intelligence.evidenceV2.maxContextObservations,
 			maxContextBytes: config.app.intelligence.evidenceV2.maxInputTokens,

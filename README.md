@@ -194,6 +194,8 @@ Nothing waits for a person. Agents and the nightly run create and change tasks, 
 
 The worker model no longer runs on every message. Once per `PANINI_RECONCILE_INTERVAL_HOURS` (default 24), or when an admin presses **Run now** on Home, it reads every new source observation since the last run. Agent claims, handoffs and reports apply immediately by rule. Threads are read in parallel (`PANINI_RECONCILE_CONCURRENCY`, default 3) and a `:panini:` reaction on a Slack message runs it at once. Set `PANINI_RECONCILE_MODE=live` for the previous per-message behaviour, and `PANINI_DIGEST_WEBHOOK_URL` to post the digest after each run. Any OpenAI Responses-compatible model works with `INTELLIGENCE_MODEL` plus `INTELLIGENCE_PRICE_INPUT_PER_MILLION` and `INTELLIGENCE_PRICE_OUTPUT_PER_MILLION`.
 
+To run it on Claude, set `INTELLIGENCE_MODEL=claude-haiku-5-5` and `INTELLIGENCE_API_KEY` to an Anthropic API key. Prices are built in. A live run that closed a task from a Slack report and created a task from a chat request used 20 model calls and cost about $0.01. Task search uses keywords unless a Voyage embedding key is set.
+
 ## Rotating the content key
 
 Set the new key in `CONTENT_ENCRYPTION_KEY`, a new `CONTENT_ENCRYPTION_KEY_VERSION` (for example `v2`), and keep the old key readable with `CONTENT_ENCRYPTION_PREVIOUS_KEYS=v1:<old key>`. New data uses the new key; old data still decrypts.

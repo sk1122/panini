@@ -1840,9 +1840,6 @@ Separate requested work, attempts, output revisions and source reports. Use reco
 			);
 		}
 		if (name === "search_tasks" || name === "search_context") {
-			if (!this.options.embeddings)
-				throw new Error("Voyage 4 embedding search is not configured");
-
 			const common = {
 				store,
 				embeddings: this.options.embeddings,

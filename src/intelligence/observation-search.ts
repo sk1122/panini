@@ -26,7 +26,8 @@ export async function searchObservationRecords<
 	T extends { id: string },
 >(input: {
 	store: LedgerStore;
-	embeddings: WorkEmbeddings;
+	/** Without embeddings, records are ranked by shared words instead. */
+	embeddings?: WorkEmbeddings | undefined;
 	kind: "task" | "context";
 	candidates: T[];
 	text: (record: T) => string;
@@ -49,6 +50,7 @@ export async function searchObservationRecords<
 		);
 
 	if (!safe.length) return [];
+	if (!input.embeddings) return keywordRank(safe, input.query, input.limit);
 
 	const embeddings = input.embeddings;
 	const vectors = new Map<string, number[][]>();
@@ -152,5 +154,30 @@ export async function searchObservationRecords<
 				b.score - a.score || a.record.id.localeCompare(b.record.id),
 		)
 		.slice(0, input.limit)
+		.map((item) => item.record);
+}
+
+/** Ranks records by how many distinct query words they contain. */
+function keywordRank<T>(
+	items: { record: T; text: string }[],
+	query: string,
+	limit: number,
+): T[] {
+	const words = [
+		...new Set(query.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []),
+	];
+
+	return items
+		.map((item) => {
+			const text = item.text.toLowerCase();
+
+			return {
+				record: item.record,
+				score: words.filter((word) => text.includes(word)).length,
+			};
+		})
+		.filter((item) => item.score > 0)
+		.sort((a, b) => b.score - a.score)
+		.slice(0, limit)
 		.map((item) => item.record);
 }

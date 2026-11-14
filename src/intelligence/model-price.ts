@@ -25,6 +25,15 @@ export const GPT6_LUNA_PRICE_2026_10_01: TokenPriceBasis = {
 	sourceUrl: "https://developers.openai.com/api/docs/models/gpt-6-luna",
 };
 
+export const CLAUDE_HAIKU_5_5_PRICE_2026_11_03: TokenPriceBasis = {
+	id: "anthropic-claude-haiku-5-5-2026-11-03",
+	model: "claude-haiku-5-5",
+	inputUsdPerMillion: 0.1,
+	cachedInputUsdPerMillion: 0.01,
+	outputUsdPerMillion: 0.5,
+	sourceUrl: "https://platform.claude.com/docs/en/about-claude/pricing",
+};
+
 export function reservedCost(
 	inputTokens: number,
 	outputTokens: number,
@@ -69,6 +78,8 @@ export function priceBasisFor(
 ): TokenPriceBasis | null {
 	if (model === GPT6_LUNA_PRICE_2026_10_01.model)
 		return GPT6_LUNA_PRICE_2026_10_01;
+	if (model === CLAUDE_HAIKU_5_5_PRICE_2026_11_03.model)
+		return CLAUDE_HAIKU_5_5_PRICE_2026_11_03;
 
 	const input = Number(env.INTELLIGENCE_PRICE_INPUT_PER_MILLION);
 	const output = Number(env.INTELLIGENCE_PRICE_OUTPUT_PER_MILLION);
