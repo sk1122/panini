@@ -341,7 +341,10 @@ function renderReconcile() {
 	}
 	if (!info.enabled) {
 		root.innerHTML =
-			"Model processing is off, so Slack and notes are not read yet. Agent claims, reports and handoffs work without it.";
+			"The nightly run is off, so Slack and notes are not read yet. Agent claims, reports and handoffs work without it." +
+			(isAdmin()
+				? ' <a href="/app/settings#model-section" data-go-view="settings">Choose a model and add your API key</a>.'
+				: " An admin can turn it on in Settings.");
 		return;
 	}
 

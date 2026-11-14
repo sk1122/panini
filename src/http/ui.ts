@@ -98,6 +98,12 @@ export function renderAppShell(
               <div class="field"><label for="new-password">New password</label><input id="new-password" name="password" type="password" required minlength="15" maxlength="128" autocomplete="new-password"><small>Use at least 15 characters.</small></div>
               <button class="button primary" type="submit">Change password</button><p class="settings-status" id="password-status" role="status"></p>
             </form></section>
+            <section class="settings-section" id="model-section" data-admin-only><header><h2>Nightly run</h2><p>Each night Panini reads your team's chat and updates tasks and company context. Choose a model and use your own API key. The key is stored encrypted and never shown again.</p></header><form id="model-form" class="settings-form">
+              <p class="model-current" id="model-current"></p>
+              <fieldset class="model-choices" id="model-choices"><legend>Model</legend></fieldset>
+              <div class="field"><label for="model-key">API key</label><input id="model-key" name="apiKey" type="password" required minlength="20" maxlength="500" autocomplete="off" spellcheck="false" placeholder="Paste your key"><small id="model-key-help">Panini checks the key with the provider before saving it.</small></div>
+              <button class="button primary" type="submit">Check and save</button> <button class="button quiet" type="button" id="model-off" hidden>Turn off</button><p class="settings-status" id="model-status" role="status"></p>
+            </form></section>
             <section class="settings-section" data-admin-only><header><h2>Company</h2><p>One shared workspace for this installation.</p></header><form id="company-form" class="settings-form">
               <div class="field"><label for="settings-company-name">Company name</label><input id="settings-company-name" name="name" required maxlength="120" autocomplete="organization"></div>
               <button class="button primary" type="submit">Save company</button><p class="settings-status" id="company-status" role="status"></p>

@@ -254,6 +254,79 @@ const observationAgent = observationAgentEnabled
 			maxContextBytes: config.app.intelligence.evidenceV2.maxInputTokens,
 		})
 	: null;
+const allowedVisibilities = config.jevWorkAllowedVisibilities.length
+	? config.jevWorkAllowedVisibilities
+	: ["company"];
+
+/*
+ * The model for this run: the server's environment first, otherwise the
+ * model and key an admin chose in the app. A workspace choice gets a monthly
+ * spending cap (PANINI_MONTHLY_MODEL_BUDGET_USD, default 10).
+ */
+let workspaceAgent: { key: string; agent: ObservationAgent } | null = null;
+
+async function currentObserver(): Promise<{
+	agent: ObservationAgent;
+	budgetId: string;
+} | null> {
+	if (observationAgent)
+		return { agent: observationAgent, budgetId: evidenceBudgetId! };
+
+	const settings = await store.modelSettings?.get();
+	const price = settings && priceBasisFor(settings.model);
+
+	if (!settings || !price) return null;
+
+	const key = `${settings.model}:${settings.updatedAt}`;
+
+	if (workspaceAgent?.key !== key)
+		workspaceAgent = {
+			key,
+			agent: new ObservationAgent({
+				workOntology: process.env.PANINI_WORK_ONTOLOGY !== "0",
+				store,
+				ledger,
+				apiKey: settings.apiKey,
+				model: settings.model,
+				pipelineVersion: evidenceVersion,
+				allowedVisibilities,
+				priceBasis: price,
+				...(isClaudeModel(settings.model)
+					? { fetcher: claudeFetcher(settings.apiKey) }
+					: {}),
+				maxContextEvents:
+					config.app.intelligence.evidenceV2.maxContextObservations,
+				maxContextBytes:
+					config.app.intelligence.evidenceV2.maxInputTokens,
+			}),
+		};
+
+	const budget = settings.budgetId
+		? await store.getInferenceBudget(settings.budgetId)
+		: null;
+	let budgetId = budget?.id ?? null;
+
+	if (
+		!budget ||
+		budget.state !== "active" ||
+		Date.parse(budget.deadline) <= Date.now() + 3_600_000 ||
+		budget.spentCalls >= budget.maxCalls
+	) {
+		budgetId = (
+			await store.createInferenceBudget({
+				label: `nightly run ${new Date().toISOString().slice(0, 7)}`,
+				maxCalls: 100_000,
+				maxInputTokens: 2_000_000_000,
+				maxOutputTokens: 50_000_000,
+				maxUsd: process.env.PANINI_MONTHLY_MODEL_BUDGET_USD ?? "10",
+				deadline: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+				priceBasis: null,
+			})
+		).id;
+		await store.modelSettings!.setBudget(budgetId);
+	}
+	return { agent: workspaceAgent.agent, budgetId: budgetId! };
+}
 
 // Spec 15.2: the model runs as a scheduled reconcile, not per message.
 const reconcileMode =
@@ -263,7 +336,7 @@ const reconcileIntervalMs =
 	3_600_000;
 
 handlers.set("evidence.source.recorded", async (job) => {
-	if (!observationAgent) return;
+	if (!observationAgent && !(await store.modelSettings?.get())) return;
 
 	const payload = z.object({ eventId: z.uuid() }).parse(job.payload);
 	const event = (await store.getSourceEvents([payload.eventId]))[0];
@@ -272,7 +345,7 @@ handlers.set("evidence.source.recorded", async (job) => {
 		!event ||
 		// Claims, handoffs and decision drafts were applied by rules in the fast lane.
 		(event.provider === "agent" && event.eventKind.startsWith("ledger.")) ||
-		!config.jevWorkAllowedVisibilities.includes(event.visibility) ||
+		!allowedVisibilities.includes(event.visibility) ||
 		// Scheduled mode waits for the reconcile run, except a message someone
 		// marked with the capture reaction: that thread runs now.
 		(reconcileMode === "scheduled" &&
@@ -307,7 +380,7 @@ for (const topic of [
 ]) {
 	handlers.set(topic, async () => {});
 }
-if (observationAgent && evidenceDiscovery) {
+if (evidenceDiscovery)
 	handlers.set("evidence.discovery.sweep", async (job) => {
 		// The scheduled reconcile run replaces the per-message discovery sweep.
 		if (
@@ -318,67 +391,72 @@ if (observationAgent && evidenceDiscovery) {
 			return;
 		await evidenceDiscovery.handle(job);
 	});
-	handlers.set("evidence.source.ready", async (job) => {
-		const payload = z
-			.object({
-				pipelineVersion: z.string(),
-				dispatchEpoch: z.string(),
-				eventId: z.uuid(),
-			})
-			.parse(job.payload);
+handlers.set("evidence.source.ready", async (job) => {
+	const payload = z
+		.object({
+			pipelineVersion: z.string(),
+			dispatchEpoch: z.string(),
+			eventId: z.uuid(),
+		})
+		.parse(job.payload);
 
-		if (
-			payload.pipelineVersion !== evidenceVersion ||
-			payload.dispatchEpoch !== evidenceDispatchEpoch
-		)
-			return;
-		await observationAgent.run({
-			eventId: payload.eventId,
-			budgetId: evidenceBudgetId!,
-		});
+	if (
+		payload.pipelineVersion !== evidenceVersion ||
+		payload.dispatchEpoch !== evidenceDispatchEpoch
+	)
+		return;
+
+	const observer = await currentObserver();
+
+	if (!observer) return;
+	await observer.agent.run({
+		eventId: payload.eventId,
+		budgetId: observer.budgetId,
 	});
-	handlers.set("reconcile.run", async (job) => {
-		if (!store.reconcileRuns) return;
+});
+handlers.set("reconcile.run", async (job) => {
+	const observer = await currentObserver();
 
-		const trigger =
-			(job.payload as { trigger?: string }).trigger === "manual"
-				? "manual"
-				: "schedule";
-		const webhook = process.env.PANINI_DIGEST_WEBHOOK_URL;
+	if (!store.reconcileRuns || !observer) return;
 
-		await runReconcile({
-			store,
-			runs: store.reconcileRuns,
-			ledger,
-			trigger,
-			allowedVisibilities: config.jevWorkAllowedVisibilities,
-			observe: (eventId) =>
-				observationAgent.run({ eventId, budgetId: evidenceBudgetId! }),
-			concurrency: Math.max(
-				1,
-				Number(process.env.PANINI_RECONCILE_CONCURRENCY ?? 3),
-			),
-			...(webhook
-				? {
-						deliverDigest: async (markdown: string) => {
-							const response = await fetch(webhook, {
-								method: "POST",
-								headers: { "content-type": "application/json" },
-								body: JSON.stringify({ text: markdown }),
-								signal: AbortSignal.timeout(10_000),
-							});
+	const trigger =
+		(job.payload as { trigger?: string }).trigger === "manual"
+			? "manual"
+			: "schedule";
+	const webhook = process.env.PANINI_DIGEST_WEBHOOK_URL;
 
-							if (!response.ok)
-								throw new Error(
-									`Digest webhook returned ${response.status}`,
-								);
-						},
-					}
-				: {}),
-			log,
-		});
+	await runReconcile({
+		store,
+		runs: store.reconcileRuns,
+		ledger,
+		trigger,
+		allowedVisibilities,
+		observe: (eventId) =>
+			observer.agent.run({ eventId, budgetId: observer.budgetId }),
+		concurrency: Math.max(
+			1,
+			Number(process.env.PANINI_RECONCILE_CONCURRENCY ?? 3),
+		),
+		...(webhook
+			? {
+					deliverDigest: async (markdown: string) => {
+						const response = await fetch(webhook, {
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify({ text: markdown }),
+							signal: AbortSignal.timeout(10_000),
+						});
+
+						if (!response.ok)
+							throw new Error(
+								`Digest webhook returned ${response.status}`,
+							);
+					},
+				}
+			: {}),
+		log,
 	});
-}
+});
 
 const githubSync = config.githubApp
 	? new GithubRepositorySync(
@@ -409,9 +487,8 @@ if (githubSync)
 
 const dispatcher = new OutboxDispatcher(store, {
 	...workerConfig,
-	leaseSeconds: observationAgent
-		? Math.max(workerConfig.leaseSeconds, 1800)
-		: workerConfig.leaseSeconds,
+	// A reconcile run can take a while; keep its lease.
+	leaseSeconds: Math.max(workerConfig.leaseSeconds, 1800),
 	workerId,
 	handlers,
 	log,
@@ -516,8 +593,8 @@ log.info("Panini worker started.", {
 	workerId,
 	notion: Boolean(notionPoller),
 	slack: Boolean(slackSupervisor),
-	observationAgent: Boolean(observationAgent),
-	reconcile: observationAgent ? reconcileMode : "off",
+	observationAgent: observationAgent ? "server" : "workspace setting",
+	reconcile: reconcileMode,
 });
 
 // A failed database probe does not refresh the heartbeat. The container becomes unhealthy.
@@ -537,9 +614,15 @@ const heartbeat = async () => {
 await heartbeat();
 
 const reconcileTimer =
-	observationAgent && store.reconcileRuns && reconcileMode === "scheduled"
+	store.reconcileRuns && reconcileMode === "scheduled"
 		? setInterval(() => {
 				void (async () => {
+					if (
+						!observationAgent &&
+						!(await store.modelSettings?.get())
+					)
+						return;
+
 					const last = await store.reconcileRuns!.lastCompleted();
 
 					if (

@@ -186,6 +186,12 @@ main { max-width: 1760px; margin: 0 auto; padding: 27px 32px 64px; }
 .settings-section h2 { margin: 0 0 7px; font-size: 15px; }
 .settings-section header p { margin: 0; color: var(--muted); font-size: 12px; max-width: 260px; }
 .settings-form { max-width: 560px; min-width: 0; }
+.model-choices { border: 0; padding: 0; margin: 0 0 14px; display: grid; gap: 8px; }
+.model-choices legend { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+.model-choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); cursor: pointer; }
+.model-choice input { margin-top: 3px; }
+.model-choice small { display: block; color: var(--muted); }
+.model-current { margin: 0 0 12px; }
 .settings-form .field { margin-bottom: 14px; }
 .settings-form .field input { min-height: 40px; }
 .settings-form small { line-height: 1.6; }

@@ -1,3 +1,4 @@
+import { PostgresModelSettings } from "../intelligence/model-settings.js";
 import {
 	workStatePolicy,
 	workScopeInstructions,
@@ -1148,6 +1149,7 @@ export class PostgresLedgerStore implements LedgerStore {
 	readonly agentLedger: AgentLedgerStore;
 	readonly reconcileRuns: PostgresReconcileRuns;
 	readonly oauth: PostgresOAuthStore;
+	readonly modelSettings: PostgresModelSettings;
 	private readonly pool: pg.Pool;
 	private readonly cipher: PayloadCipher;
 	private readonly contentReady: Promise<void>;
@@ -1170,6 +1172,11 @@ export class PostgresLedgerStore implements LedgerStore {
 		);
 		this.oauth = new PostgresOAuthStore(this.pool, organizationId);
 		this.cipher = PayloadCipher.fromEnvironment(contentEncryptionKey);
+		this.modelSettings = new PostgresModelSettings(
+			this.pool,
+			organizationId,
+			this.cipher,
+		);
 		this.contentReady =
 			options.backfillLegacyContent === false
 				? Promise.resolve()

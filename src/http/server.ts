@@ -1,3 +1,4 @@
+import { supportedModels } from "../intelligence/model-settings.js";
 import {
 	createHash,
 	createHmac,
@@ -1354,13 +1355,55 @@ export async function buildHttpServer(options: HttpServerOptions) {
 			),
 	);
 
-	// Reconcile needs a worker with a model key; without one, say so instead of queueing work no one runs.
-	const reconcileEnabled =
+	// The nightly run needs a model: from server settings, or chosen in the app.
+	const serverModel =
 		options.config.app.intelligence.enabled &&
 		Boolean(options.config.intelligenceApiKey);
 
+	const reconcileEnabled = async () =>
+		serverModel || Boolean(await options.ledger.modelSettingsView());
+
+	const requireAdmin = (request: FastifyRequest) => {
+		if (identity && !isAdministrator(identity.member(request)))
+			throw new DomainError(
+				"Only an owner or admin can change the model.",
+				"FORBIDDEN",
+			);
+	};
+
+	app.get("/api/settings/model", async (request) => {
+		requireAdmin(request);
+		return {
+			models: supportedModels,
+			setByServer: serverModel
+				? { model: options.config.intelligenceModel }
+				: null,
+			current: await options.ledger.modelSettingsView(),
+		};
+	});
+	app.put("/api/settings/model", async (request) => {
+		requireAdmin(request);
+
+		const body = z
+			.object({ model: z.string(), apiKey: z.string().max(500) })
+			.parse(request.body);
+
+		return {
+			current: await options.ledger.saveModelSettings(
+				body.model,
+				body.apiKey,
+				requestActor(request),
+			),
+		};
+	});
+	app.delete("/api/settings/model", async (request) => {
+		requireAdmin(request);
+		await options.ledger.removeModelSettings(requestActor(request));
+		return { current: null };
+	});
+
 	app.get("/api/reconcile/runs", async () => ({
-		enabled: reconcileEnabled,
+		enabled: await reconcileEnabled(),
 		runs: (await options.ledger.listReconcileRuns(10)).map(
 			({ digest: _digest, ...run }) => run,
 		),
@@ -1371,9 +1414,9 @@ export async function buildHttpServer(options: HttpServerOptions) {
 		),
 	}));
 	app.post("/api/reconcile/run", async (request, reply) => {
-		if (!reconcileEnabled)
+		if (!(await reconcileEnabled()))
 			return reply.code(409).send({
-				error: "Model processing is off. Set a model key and enable intelligence to run reconcile.",
+				error: "Choose a model and add its API key in Settings to turn on the nightly run.",
 			});
 		if (identity && !isAdministrator(identity.member(request)))
 			throw new DomainError(

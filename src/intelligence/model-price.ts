@@ -34,6 +34,15 @@ export const CLAUDE_HAIKU_5_5_PRICE_2026_11_03: TokenPriceBasis = {
 	sourceUrl: "https://platform.claude.com/docs/en/about-claude/pricing",
 };
 
+export const CLAUDE_SONNET_5_5_PRICE_2026_11_03: TokenPriceBasis = {
+	id: "anthropic-claude-sonnet-5-5-2026-11-03",
+	model: "claude-sonnet-5-5",
+	inputUsdPerMillion: 2,
+	cachedInputUsdPerMillion: 0.1,
+	outputUsdPerMillion: 10,
+	sourceUrl: "https://platform.claude.com/docs/en/about-claude/pricing",
+};
+
 export function reservedCost(
 	inputTokens: number,
 	outputTokens: number,
@@ -80,6 +89,8 @@ export function priceBasisFor(
 		return GPT6_LUNA_PRICE_2026_10_01;
 	if (model === CLAUDE_HAIKU_5_5_PRICE_2026_11_03.model)
 		return CLAUDE_HAIKU_5_5_PRICE_2026_11_03;
+	if (model === CLAUDE_SONNET_5_5_PRICE_2026_11_03.model)
+		return CLAUDE_SONNET_5_5_PRICE_2026_11_03;
 
 	const input = Number(env.INTELLIGENCE_PRICE_INPUT_PER_MILLION);
 	const output = Number(env.INTELLIGENCE_PRICE_OUTPUT_PER_MILLION);

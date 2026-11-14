@@ -1,3 +1,7 @@
+import {
+	checkModelKey,
+	isSupportedModel,
+} from "../intelligence/model-settings.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { contentHash } from "./content-hash.js";
 import {
@@ -936,6 +940,71 @@ export class TeamLedger {
 				changed: changed.length,
 			},
 		};
+	}
+
+	/** The nightly run's model choice, without the key. */
+	async modelSettingsView() {
+		const settings = await this.store.modelSettings?.get();
+
+		return settings
+			? {
+					model: settings.model,
+					keyHint: settings.keyHint,
+					updatedBy: actorName(settings.updatedBy),
+					updatedAt: settings.updatedAt,
+				}
+			: null;
+	}
+
+	/** Checks the key with the provider, then stores it encrypted. */
+	async saveModelSettings(model: string, apiKey: string, actor: string) {
+		if (!this.store.modelSettings)
+			throw new DomainError(
+				"Model settings need PostgreSQL.",
+				"CONFLICT",
+			);
+		if (!isSupportedModel(model))
+			throw new DomainError(
+				"Choose one of the listed models.",
+				"INVALID",
+			);
+
+		const key = apiKey.trim();
+
+		if (key.length < 20)
+			throw new DomainError("Paste the full API key.", "INVALID");
+
+		const check = await checkModelKey(model, key);
+
+		if (!check.ok) throw new DomainError(check.reason, "INVALID");
+		await this.store.modelSettings.save({
+			model,
+			apiKey: key,
+			updatedBy: actor,
+		});
+		await this.store.appendAuditEvent({
+			actor,
+			action: "model_settings.saved",
+			targetType: "model_settings",
+			targetId: model,
+			sourceEventId: null,
+			proposalId: null,
+			details: { model, keyHint: key.slice(-4) },
+		});
+		return this.modelSettingsView();
+	}
+
+	async removeModelSettings(actor: string) {
+		await this.store.modelSettings?.remove();
+		await this.store.appendAuditEvent({
+			actor,
+			action: "model_settings.removed",
+			targetType: "model_settings",
+			targetId: "nightly",
+			sourceEventId: null,
+			proposalId: null,
+			details: {},
+		});
 	}
 
 	listReconcileRuns(limit = 10) {

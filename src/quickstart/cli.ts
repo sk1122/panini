@@ -159,30 +159,29 @@ async function main() {
 	}
 
 	const url = `http://127.0.0.1:${state.appPort}`;
-	const server = spawn(
-		process.execPath,
-		[join(packageRoot, "dist", "src", "main.js")],
-		{
+
+	const run = (entry: string) =>
+		spawn(process.execPath, [join(packageRoot, "dist", "src", entry)], {
 			stdio: ["ignore", "ignore", "inherit"],
-			env: {
-				...process.env,
-				NODE_ENV: "production",
-				HOST: "127.0.0.1",
-				PORT: String(state.appPort),
-				PANINI_PUBLIC_URL: url,
-				DATABASE_URL: databaseUrl,
-				CONTENT_ENCRYPTION_KEY: state.contentEncryptionKey,
-				APP_ADMIN_TOKEN: state.adminToken,
-				APP_CONFIG_PATH: join(
-					packageRoot,
-					"config",
-					"panini.selfhost.yaml",
-				),
-				AUTO_MIGRATE: "false",
-				LOG_LEVEL: process.env.LOG_LEVEL ?? "warn",
-			},
-		},
-	);
+			env,
+		});
+
+	const env = {
+		...process.env,
+		NODE_ENV: "production",
+		HOST: "127.0.0.1",
+		PORT: String(state.appPort),
+		PANINI_PUBLIC_URL: url,
+		DATABASE_URL: databaseUrl,
+		CONTENT_ENCRYPTION_KEY: state.contentEncryptionKey,
+		APP_ADMIN_TOKEN: state.adminToken,
+		APP_CONFIG_PATH: join(packageRoot, "config", "panini.selfhost.yaml"),
+		AUTO_MIGRATE: "false",
+		LOG_LEVEL: process.env.LOG_LEVEL ?? "warn",
+	};
+	const server = run("main.js");
+	// The worker runs the nightly job once a model is chosen in Settings.
+	const worker = run("worker.js");
 
 	console.log(`\nPanini is running at ${url}/app/home`);
 	if (created) {
@@ -202,6 +201,7 @@ async function main() {
 
 	const stop = async () => {
 		server.kill("SIGTERM");
+		worker.kill("SIGTERM");
 		await database?.stop().catch(() => undefined);
 		process.exit(0);
 	};
@@ -209,6 +209,7 @@ async function main() {
 	process.once("SIGINT", () => void stop());
 	process.once("SIGTERM", () => void stop());
 	server.once("exit", async (code) => {
+		worker.kill("SIGTERM");
 		await database?.stop().catch(() => undefined);
 		process.exit(code ?? 0);
 	});

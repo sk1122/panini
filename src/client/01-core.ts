@@ -315,10 +315,57 @@ function settingsStatus(id, message, error = false) {
 	element.classList.toggle("is-error", error);
 }
 
+function renderModelSettings(info) {
+	const current = info.current;
+	const chosen = current?.model || info.models[0].id;
+
+	byId("model-current").innerHTML = info.setByServer
+		? "The server sets the model (" +
+			esc(info.setByServer.model) +
+			"). Change it in the server's environment."
+		: current
+			? "<strong>On.</strong> " +
+				esc(
+					info.models.find((m) => m.id === current.model)?.label ||
+						current.model,
+				) +
+				", key ending " +
+				esc(current.keyHint) +
+				". Set by " +
+				esc(who(current.updatedBy)) +
+				"."
+			: "<strong>Off.</strong> Agents still claim, report and hand off work without it.";
+	byId("model-choices").innerHTML =
+		"<legend>Model</legend>" +
+		info.models
+			.map(
+				(model) =>
+					'<label class="model-choice"><input type="radio" name="model" value="' +
+					esc(model.id) +
+					'"' +
+					(model.id === chosen ? " checked" : "") +
+					"><span><strong>" +
+					esc(model.label) +
+					"</strong> · " +
+					esc(model.provider) +
+					"<small>" +
+					esc(model.note) +
+					"</small></span></label>",
+			)
+			.join("");
+	byId("model-off").hidden = !current;
+	byId("model-form").hidden = Boolean(info.setByServer);
+}
+
+async function loadModelSettings() {
+	renderModelSettings(await api("/api/settings/model"));
+}
+
 async function loadSettings() {
 	if (!accountsEnabled || !state.account) return;
 	renderAccount();
 	if (!isAdmin()) return;
+	void loadModelSettings().catch(showError);
 
 	const [accounts, invitations] = await Promise.all([
 		api("/api/members"),
@@ -428,6 +475,10 @@ async function loadOnboarding() {
 	if (!accountsEnabled || !state.account) return;
 
 	const status = await api("/api/onboarding");
+	const model = isAdmin()
+		? await api("/api/settings/model").catch(() => null)
+		: null;
+	const modelOn = Boolean(model?.current || model?.setByServer);
 
 	byId("onboarding-title").textContent =
 		"Welcome to " + status.organization.name;
@@ -478,10 +529,20 @@ async function loadOnboarding() {
 					status.sourceConnected,
 					"Connect sources",
 					"integrations",
+				) +
+				step(
+					4,
+					"Choose the nightly run model",
+					modelOn
+						? "The nightly run is on. Panini reads new chat each night and updates tasks and context."
+						: "Pick a model and paste your own API key. Without it, agents still work; chat is not read.",
+					modelOn,
+					modelOn ? "View model" : "Choose model",
+					"settings",
 				)
 			: "") +
 		step(
-			isAdmin() ? 4 : 2,
+			isAdmin() ? 5 : 2,
 			"Connect your agent",
 			status.agentConnected
 				? "Your agent has made an authenticated connection."
@@ -529,6 +590,29 @@ bindSettingsForm("profile-form", "profile-status", async (body) => {
 	delete byId("profile-name").dataset.dirty;
 	renderAccount();
 	settingsStatus("profile-status", "Profile saved.");
+});
+bindSettingsForm("model-form", "model-status", async (body) => {
+	settingsStatus("model-status", "Checking the key with the provider…");
+	await api("/api/settings/model", {
+		method: "PUT",
+		body: JSON.stringify({ model: body.model, apiKey: body.apiKey }),
+	});
+	(byId("model-key") as HTMLInputElement).value = "";
+	await loadModelSettings();
+	settingsStatus("model-status", "Saved. The nightly run is on.");
+});
+byId("model-off").addEventListener("click", async () => {
+	try {
+		await api("/api/settings/model", { method: "DELETE" });
+		await loadModelSettings();
+		settingsStatus("model-status", "Turned off. The key was deleted.");
+	} catch (error) {
+		settingsStatus(
+			"model-status",
+			error.message || "Unable to turn off.",
+			true,
+		);
+	}
 });
 bindSettingsForm("company-form", "company-status", async (body) => {
 	const result = await api("/api/workspace/settings", {

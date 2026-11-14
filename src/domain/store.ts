@@ -93,6 +93,7 @@ export interface LedgerStore extends EvidenceStore {
 	readonly agentLedger: import("./agent-ledger.js").AgentLedgerStore;
 	/** Scheduled reconcile runs; PostgreSQL only. */
 	readonly reconcileRuns?: import("../reconcile/runner.js").PostgresReconcileRuns;
+	readonly modelSettings?: import("../intelligence/model-settings.js").PostgresModelSettings;
 	/** MCP OAuth clients and refresh tokens; PostgreSQL only. */
 	readonly oauth?: import("../security/oauth.js").PostgresOAuthStore;
 	ensureWorkScope?(
