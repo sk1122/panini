@@ -22,14 +22,47 @@ function decodeKey(value: string): Buffer {
 	return key;
 }
 
+/**
+ * AES-256-GCM with a key ring. New data uses the current key and version; data
+ * written under an older version still decrypts while that key is listed in
+ * CONTENT_ENCRYPTION_PREVIOUS_KEYS ("v1:<key>,v2:<key>").
+ */
 export class PayloadCipher {
 	private readonly key: Buffer;
+	private readonly ring = new Map<string, Buffer>();
 
 	constructor(
 		secret: string,
 		readonly keyVersion = "v1",
+		previous: Record<string, string> = {},
 	) {
 		this.key = decodeKey(secret);
+		for (const [version, value] of Object.entries(previous))
+			this.ring.set(version, decodeKey(value));
+		this.ring.set(keyVersion, this.key);
+	}
+
+	/** The content cipher for this installation, including any previous keys. */
+	static fromEnvironment(
+		secret: string,
+		env: NodeJS.ProcessEnv = process.env,
+	): PayloadCipher {
+		const version = env.CONTENT_ENCRYPTION_KEY_VERSION?.trim() || "v1";
+		const previous: Record<string, string> = {};
+
+		for (const item of (env.CONTENT_ENCRYPTION_PREVIOUS_KEYS ?? "")
+			.split(",")
+			.map((value) => value.trim())
+			.filter(Boolean)) {
+			const separator = item.indexOf(":");
+
+			if (separator < 1)
+				throw new Error(
+					"CONTENT_ENCRYPTION_PREVIOUS_KEYS entries must look like version:key.",
+				);
+			previous[item.slice(0, separator)] = item.slice(separator + 1);
+		}
+		return new PayloadCipher(secret, version, previous);
 	}
 
 	encrypt(payload: JsonValue): EncryptedPayload {
@@ -49,7 +82,9 @@ export class PayloadCipher {
 	}
 
 	decrypt(payload: EncryptedPayload): JsonValue {
-		if (payload.keyVersion !== this.keyVersion) {
+		const key = this.ring.get(payload.keyVersion);
+
+		if (!key) {
 			throw new Error(
 				`Unsupported content-encryption key version ${payload.keyVersion}.`,
 			);
@@ -57,7 +92,7 @@ export class PayloadCipher {
 
 		const decipher = createDecipheriv(
 			"aes-256-gcm",
-			this.key,
+			key,
 			Buffer.from(payload.iv, "base64"),
 		);
 

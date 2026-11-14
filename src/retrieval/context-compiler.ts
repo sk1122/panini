@@ -342,9 +342,13 @@ function renderTaskList(
 
 		const owner = task.owner ? `; owner: ${task.owner}` : "";
 		const project = task.project ? `; project: ${task.project}` : "";
+		const observed =
+			task.standing === "observed"
+				? " [observed: unconfirmed, treat as a hint]"
+				: "";
 
 		return [
-			`- [${task.status}] ${task.title}${owner}${project} (task panini://context/work/${task.id}, version ${task.version})`,
+			`- [${task.status}]${observed} ${task.title}${owner}${project} (task panini://context/work/${task.id}, version ${task.version})`,
 		];
 	});
 

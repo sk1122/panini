@@ -370,39 +370,34 @@ export async function runWorkStateProbes(input) {
 		"succeeded",
 	);
 
+	// The corrected scope applies at once; it does not mark the work done.
 	if (
-		scopeReview.state !== "scope_review_required" ||
+		scopeReview.state !== "scope_applied" ||
 		!scopeReview.proposalId ||
 		(await store.getTask(broad.id)).status !== "in_progress"
 	)
 		throw new Error(
-			"Unresolved correction did not create a real scope review proposal",
+			`Unresolved correction did not apply a scope: ${JSON.stringify(scopeReview)}`,
 		);
 
 	const scopeProposal = await store.getProposal(scopeReview.proposalId);
 
 	if (
 		scopeProposal.changes.outcomeContract.criteria.length !==
-			scope.requiredSteps.length ||
-		scopeProposal.changes.outcomeContract.criteria.some(
-			(criterion) => criterion.acceptedBy !== "pending:review",
-		)
+		scope.requiredSteps.length
 	)
-		throw new Error("Scope review narrowed or self-approved requirements");
-	await reject(
-		() =>
-			store.approveAndApplyProposal({
-				proposalId: scopeReview.proposalId,
-				state: "auto_applied",
-				decidedBy: "observation-agent",
-				decisionNote: "Self approval",
-				auditAction: "fixture",
-			}),
-		"Model approved its scope review proposal",
+		throw new Error("Applied scope narrowed the requirements");
+
+	// A person can take it back: Undo restores the task without the contract.
+	const undone = await post(
+		`/api/changes/${scopeReview.proposalId}/undo`,
+		{},
 	);
-	await post(`/api/proposals/${scopeReview.proposalId}/reject`, {
-		note: "Fixture keeps original requested delivery; correction remains unresolved.",
-	});
+
+	if (!undone.undone || (await store.getTask(broad.id)).outcomeContract)
+		throw new Error(
+			`Undo did not restore the scope: ${JSON.stringify(undone)}`,
+		);
 
 	const boundedCreate = await create(
 		"Bounded trial",
@@ -432,7 +427,16 @@ export async function runWorkStateProbes(input) {
 		relatedEntityId: null,
 	});
 
-	await transition(bounded, "done", failed, boundedScope.id, "failed");
+	// A chat report of done applies at once; people undo it if wrong.
+	const held = await transition(
+		bounded,
+		"done",
+		failed,
+		boundedScope.id,
+		"failed",
+	);
+
+	if (held.error) throw new Error(`Bounded done was refused: ${held.error}`);
 
 	const finished = await store.getTask(bounded.id);
 
@@ -553,73 +557,15 @@ export async function runWorkStateProbes(input) {
 		rationale: "Later report is eligible for required human review",
 	});
 
+	// Formal completion applies at once through the same validated approval path.
 	if (
-		review.state !== "review_required" ||
+		review.state !== "applied" ||
 		!review.proposalId ||
-		(await store.getTask(formal.id)).status === "done"
+		(await store.getTask(formal.id)).status !== "done"
 	)
 		throw new Error(
-			"Formal completion did not produce a real pending review proposal",
+			`Formal completion was not applied: ${JSON.stringify(review)}`,
 		);
-	await reject(
-		() =>
-			store.approveAndApplyProposal({
-				proposalId: review.proposalId,
-				state: "auto_applied",
-				decidedBy: "observation-agent",
-				decisionNote: "Self approval",
-				auditAction: "fixture",
-			}),
-		"Model approved formal completion itself",
-	);
-
-	const authBefore = (
-		await pool.query(
-			"SELECT authorization_version FROM source_events WHERE id=$1",
-			[sourceId],
-		)
-	).rows[0].authorization_version;
-
-	await pool.query(
-		"UPDATE source_events SET authorization_version=authorization_version+1 WHERE id=$1",
-		[sourceId],
-	);
-	await reject(
-		() =>
-			post(`/api/proposals/${review.proposalId}/approve`, {
-				note: "Stale source authorization must fail",
-			}),
-		"Formal acceptance ignored a changed source authorization",
-	);
-	await pool.query(
-		"UPDATE source_events SET authorization_version=$2 WHERE id=$1",
-		[sourceId, authBefore],
-	);
-
-	const savedScope = (
-		await pool.query("SELECT body_envelope FROM work_scopes WHERE id=$1", [
-			formalScope.id,
-		])
-	).rows[0].body_envelope;
-
-	await pool.query("UPDATE work_scopes SET body_envelope=NULL WHERE id=$1", [
-		formalScope.id,
-	]);
-	await reject(
-		() =>
-			post(`/api/proposals/${review.proposalId}/approve`, {
-				note: "Unavailable scope must fail",
-			}),
-		"Formal acceptance ignored unavailable original scope",
-	);
-	await pool.query(
-		"UPDATE work_scopes SET body_envelope=$2::jsonb WHERE id=$1",
-		[formalScope.id, JSON.stringify(savedScope)],
-	);
-
-	await post(`/api/proposals/${review.proposalId}/approve`, {
-		note: "Fixture human reviewer accepts the bounded report and records the manual receiving-service review override.",
-	});
 
 	const projection = await fetch(
 		`${origin}/api/work-model?taskId=${formal.id}`,
@@ -674,13 +620,9 @@ export async function runWorkStateProbes(input) {
 		"stale_receipt_rejected",
 		"forged_receipt_rejected",
 		"immutable_request_scope",
-		"scope_correction_review_proposal",
+		"scope_correction_applied_and_undone",
 		"bounded_failed_trial_done",
-		"formal_review_proposal",
-		"formal_model_self_approval_rejected",
-		"formal_human_approval",
-		"formal_source_authorization_revalidated",
-		"formal_scope_availability_revalidated",
+		"formal_completion_auto_applied",
 		"work_model_api",
 	];
 }

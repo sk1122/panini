@@ -12,7 +12,7 @@ import {
 } from "../src/retrieval/context-embedding-indexer.js";
 import type { EmbeddingAdapter } from "../src/retrieval/embedding-adapter.js";
 import { OpenRouterEmbeddingAdapter } from "../src/retrieval/openrouter-embedding-adapter.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { testStore } from "./helpers/test-store.js";
 
 interface FakeRow extends IndexedContextDocument {
 	model: string;
@@ -160,7 +160,7 @@ describe("context embedding indexer", () => {
 	});
 
 	it("indexes accepted files only, skips credentials, reindexes revisions, and prunes revocations", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ledger = new TeamLedger(
 			store,
 			new ProposalPolicy({

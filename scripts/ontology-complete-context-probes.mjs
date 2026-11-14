@@ -227,41 +227,24 @@ export async function runCompleteContextProbes(input) {
 				"Use selected identity context and the complete known assertion record",
 		});
 
+		// Nothing waits for a person: a scope correction or reported done applies.
+		if (mode === "review" && completed.state !== "scope_applied")
+			throw new Error(
+				`Unsupported completion did not apply a scope: ${JSON.stringify(completed)}`,
+			);
 		if (
-			mode === "review" &&
-			(completed.state !== "scope_review_required" ||
-				!completed.proposalId ||
-				(await store.getTask(target.id)).status === "done")
+			mode === "legacy" &&
+			(completed.error ||
+				(await store.getTask(target.id)).status !== "done")
 		)
 			throw new Error(
-				"Unsupported completion did not create a pending scope review",
+				`A chat report of done was not applied: ${JSON.stringify(completed)}`,
 			);
-		if (mode === "review") {
-			const proposal = (await store.listProposals()).find(
-				(item) => item.id === completed.proposalId,
-			);
-
-			if (
-				proposal?.state !== "pending" ||
-				!proposal.changes.outcomeContract
-			)
-				throw new Error(
-					"Scope review was not a real pending contract proposal",
-				);
-			await store.decideProposal(proposal.id, {
-				state: "rejected",
-				decidedBy: "fixture-reviewer",
-				decisionNote:
-					"Verified pending review; close this disposable fixture",
-				auditAction: "fixture",
-			});
-		}
 		if (
 			mode !== "review" &&
-			(completed.status !==
-				(mode === "legacy" ? "done" : "in_progress") ||
-				completed.result !==
-					(mode === "legacy" ? "failed" : "unknown") ||
+			mode !== "legacy" &&
+			(completed.status !== "in_progress" ||
+				completed.result !== "unknown" ||
 				completed.independentlyVerified !== false)
 		)
 			throw new Error(
@@ -272,7 +255,7 @@ export async function runCompleteContextProbes(input) {
 				reference: "selected_reference_context_and_access",
 				large: "complete_101_assertion_record",
 				legacy: "accepted_boundary_and_constrained_ids",
-				review: "unsupported_completion_scope_review",
+				review: "unsupported_completion_scope_applied",
 			}[mode],
 		);
 	}

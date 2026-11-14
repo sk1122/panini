@@ -6,7 +6,7 @@ import {
 	JevRelevanceRanker,
 	type RelevanceRanker,
 } from "../src/retrieval/jev-ranker.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { testStore } from "./helpers/test-store.js";
 
 const policy = new ProposalPolicy({
 	autoApproveNewTasks: true,
@@ -16,7 +16,7 @@ const policy = new ProposalPolicy({
 
 describe("Jev entry ranking", () => {
 	it("sends only bounded accepted entry text and validates a pinned response", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ledger = new TeamLedger(store, policy);
 		const entry = await ledger.createContextEntry(
 			{
@@ -56,7 +56,7 @@ describe("Jev entry ranking", () => {
 	});
 
 	it("blocks credential-bearing text before any external request", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ledger = new TeamLedger(store, policy);
 		const entry = await ledger.createContextEntry(
 			{
@@ -81,7 +81,7 @@ describe("Jev entry ranking", () => {
 	});
 
 	it("blocks credential-bearing questions before any external request", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ledger = new TeamLedger(store, policy);
 		const entry = await ledger.createContextEntry(
 			{
@@ -108,7 +108,7 @@ describe("Jev entry ranking", () => {
 	});
 
 	it("ranks only authorized entries and leaves final authorization with Panini", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const seen: string[][] = [];
 		const ranker: RelevanceRanker = {
 			async rank(_question, entries) {
@@ -185,7 +185,7 @@ describe("Jev entry ranking", () => {
 	});
 
 	it("falls back to PostgreSQL ranking on a model error", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ranker: RelevanceRanker = {
 			async rank() {
 				throw new Error("simulated outage");
@@ -220,7 +220,7 @@ describe("Jev entry ranking", () => {
 	});
 
 	it("uses Jev relevance per character so one long file cannot crowd out a relevant fact", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ranker: RelevanceRanker = {
 			async rank(_question, entries) {
 				return {
@@ -270,7 +270,7 @@ describe("Jev entry ranking", () => {
 	});
 
 	it("fails closed if the agent is revoked while Jev ranks", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 
 		let revoke: () => Promise<void> = async () => {};
 

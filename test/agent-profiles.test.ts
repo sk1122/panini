@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { buildAgentSetup } from "../src/domain/agent-setup.js";
 import { ProposalPolicy } from "../src/domain/policy.js";
 import { TeamLedger } from "../src/domain/team-ledger.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { testStore } from "./helpers/test-store.js";
 
-function makeLedger() {
+async function makeLedger() {
 	return new TeamLedger(
-		new MemoryLedgerStore(),
+		await testStore(),
 		new ProposalPolicy({
 			autoApproveNewTasks: true,
 			autoApproveContext: true,
@@ -17,7 +17,7 @@ function makeLedger() {
 
 describe("agent profiles", () => {
 	it("binds every active profile to an active workspace member", async () => {
-		const ledger = makeLedger();
+		const ledger = await makeLedger();
 		const member = (await ledger.workspace()).members[0]!;
 		const enrollment = await ledger.createAgentProfile({
 			memberId: member.id,
@@ -46,7 +46,7 @@ describe("agent profiles", () => {
 	});
 
 	it("allows one member to own multiple independently authenticated profiles", async () => {
-		const ledger = makeLedger();
+		const ledger = await makeLedger();
 		const member = (await ledger.workspace()).members[0]!;
 		const first = await ledger.createAgentProfile({
 			memberId: member.id,
@@ -77,7 +77,7 @@ describe("agent profiles", () => {
 	});
 
 	it("invalidates the old secret on rotation and all secrets on revocation", async () => {
-		const ledger = makeLedger();
+		const ledger = await makeLedger();
 		const member = (await ledger.workspace()).members[0]!;
 		const enrollment = await ledger.createAgentProfile({
 			memberId: member.id,
@@ -97,7 +97,7 @@ describe("agent profiles", () => {
 	});
 
 	it("keeps versioned agent files private and revokes access with the profile", async () => {
-		const ledger = makeLedger();
+		const ledger = await makeLedger();
 		const member = (await ledger.workspace()).members[0]!;
 		const first = await ledger.createAgentProfile({
 			memberId: member.id,
@@ -183,7 +183,7 @@ describe("agent profiles", () => {
 	});
 
 	it("generates harness-specific setup without embedding the secret", async () => {
-		const ledger = makeLedger();
+		const ledger = await makeLedger();
 		const member = (await ledger.workspace()).members[0]!;
 		const enrollment = await ledger.createAgentProfile({
 			memberId: member.id,
@@ -206,7 +206,7 @@ describe("agent profiles", () => {
 	});
 
 	it("keeps every harness recipe secret-free and uses the supported connection shape", async () => {
-		const ledger = makeLedger();
+		const ledger = await makeLedger();
 		const member = (await ledger.workspace()).members[0]!;
 		const cases = [
 			{

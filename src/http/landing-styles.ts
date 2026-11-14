@@ -271,4 +271,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--red); outline-o
   *, *:before, *:after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   [data-reveal] { opacity: 1; transform: none; }
 }
+.hero-install { margin: 22px 0 6px; padding: 12px 16px; border-radius: 10px; background: #111; color: #f5f3ee; font: 600 15px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-x: auto; }
+.hero-install-note { margin: 0 0 18px; font-size: 13px; opacity: .75; }
+.hero-install-note code { font-size: 12px; }
 `;

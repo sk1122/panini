@@ -88,6 +88,9 @@ export function acceptedTaskChanges(input: {
 }): TaskProposalChanges {
 	if (input.changes.outcomeContract === undefined) return input.changes;
 	if (input.changes.outcomeContract === null) {
+		// A member may clear a contract (Undo); agents and models may not.
+		if (input.state === "approved" && input.decidedBy.startsWith("member:"))
+			return input.changes;
 		throw new DomainError(
 			"An accepted outcome contract cannot be cleared.",
 			"INVALID",

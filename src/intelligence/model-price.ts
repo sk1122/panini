@@ -58,3 +58,36 @@ export function settledCost(
 
 	return (Math.ceil(amount * 100_000_000) / 100_000_000).toFixed(8);
 }
+
+/**
+ * Prices for the configured model. gpt-6-luna has a built-in table; any other
+ * OpenAI Responses-compatible model needs explicit prices so budgets stay real.
+ */
+export function priceBasisFor(
+	model: string,
+	env: NodeJS.ProcessEnv = process.env,
+): TokenPriceBasis | null {
+	if (model === GPT6_LUNA_PRICE_2026_10_01.model)
+		return GPT6_LUNA_PRICE_2026_10_01;
+
+	const input = Number(env.INTELLIGENCE_PRICE_INPUT_PER_MILLION);
+	const output = Number(env.INTELLIGENCE_PRICE_OUTPUT_PER_MILLION);
+	const cached = Number(
+		env.INTELLIGENCE_PRICE_CACHED_INPUT_PER_MILLION ?? input,
+	);
+
+	if (
+		![input, output, cached].every(
+			(value) => Number.isFinite(value) && value >= 0,
+		)
+	)
+		return null;
+	return {
+		id: `configured-${model}`,
+		model,
+		inputUsdPerMillion: input,
+		cachedInputUsdPerMillion: cached,
+		outputUsdPerMillion: output,
+		sourceUrl: "configured:INTELLIGENCE_PRICE_*",
+	};
+}

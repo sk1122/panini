@@ -1,14 +1,36 @@
 # <img src="public/panini-mark.svg" alt="Panini logo" width="36" height="36" align="absmiddle"> Panini
 
-Company memory for people and agents. Panini turns observations from connected tools into tasks, shared context, and a history of changes, with evidence attached.
+Memory for your agents. Panini is an open-source work ledger for teams whose people run coding agents: shared company context, who is working on what, handoffs, and proof of what is done.
 
 [![Verify](https://github.com/sk1122/panini/actions/workflows/verify.yml/badge.svg)](https://github.com/sk1122/panini/actions/workflows/verify.yml)
 
-Use the web app to review work. Use MCP to give an agent access to the same company context through a scoped profile.
+Use the web app to see and undo work. Use MCP to give an agent access to the same company context through a scoped profile.
 
 [![Download the product demo](media/panini-demo.png)](https://github.com/sk1122/panini/raw/refs/heads/main/media/panini-demo.mp4)
 
 [Download the 66-second MP4 demo](https://github.com/sk1122/panini/raw/refs/heads/main/media/panini-demo.mp4) · [Captions](media/panini-demo.srt). Recorded in the real local app with fictional data and simulated model responses. The demo agent makes a real scoped MCP request.
+
+## Screenshots
+
+**Home**: notes from agents, who is working on what, and what changed.
+
+![Home](media/screenshots/home.png)
+
+**Agents**: what each agent is doing, what it did last, what it cost, and what was blocked. Undo a whole session in one click.
+
+![Agents](media/screenshots/agents.png)
+
+**Changes**: agents and the nightly run apply changes at once. Undo any one of them here.
+
+![Changes](media/screenshots/changes.png)
+
+**Tasks**: everything the team and its agents are working on.
+
+![Tasks](media/screenshots/tasks.png)
+
+**Context**: decisions, plans and policies, with every earlier version.
+
+![Context](media/screenshots/context.png)
 
 ## What it does
 
@@ -24,7 +46,7 @@ flowchart LR
     A[Connectors and API] --> B[Encrypted source observations]
     B --> C[Outbox and worker]
     C --> D[Evidence and proposed changes]
-    D --> E[Policy checks or human review]
+    D --> E[Applied at once, undoable]
     E --> F[Accepted tasks, context and history]
     F --> G[Web app and MCP]
 ```
@@ -35,13 +57,13 @@ A source report is evidence, not independent verification. A commit can show imp
 
 Panini connects five parts of company work:
 
-| Record                | Meaning                                                     |
-| --------------------- | ----------------------------------------------------------- |
-| Task and scope        | What was requested and which requirements remain open       |
-| Execution attempt     | What was tried, in which environment, and with what result  |
-| Artifact              | What was produced, including its reference and revision     |
-| Evidence assertion    | What a source actually reported, with exact supporting text |
-| Assessment and review | Whether the evidence permits a change or needs human review |
+| Record             | Meaning                                                     |
+| ------------------ | ----------------------------------------------------------- |
+| Task and scope     | What was requested and which requirements remain open       |
+| Execution attempt  | What was tried, in which environment, and with what result  |
+| Artifact           | What was produced, including its reference and revision     |
+| Evidence assertion | What a source actually reported, with exact supporting text |
+| Assessment         | Why a change was made and which evidence supports it        |
 
 Open a task to inspect its requested work, linked attempts and outputs, reported result, and original source. Long descriptions remain available without hiding the work requirements.
 
@@ -53,7 +75,25 @@ The worker uses `gpt-6-luna` with medium reasoning and budgeted Voyage-4 work em
 
 Panini is under development. New installations keep connectors and provider processing disabled until configured. Task descriptions and context organization still need refinement. Complete company coverage and model accuracy on an unseen company are not established.
 
-## Quick start with Docker
+## Quick start
+
+Requirements: Node.js 22 or later.
+
+```sh
+npx panini-work
+```
+
+This starts Panini on your machine with a private embedded PostgreSQL and a demo company: tasks, two agents with sessions, a claim, a handoff note, a team note and a decision. No Docker and no API key. Sign-in details are printed once and saved in `.panini/quickstart/state.json`. Use `--empty` for no demo data, or `--database-url` to use an existing PostgreSQL.
+
+Then connect your coding agent from its repository:
+
+```sh
+npx panini-work connect
+```
+
+It opens the browser, asks you to approve the agent, stores the token in your macOS keychain (elsewhere in `~/.panini/agent.json`, readable only by you), registers the MCP server for Claude Code with a helper that reads the token at request time, installs session hooks, and prints the setup line for other clients.
+
+## Self-hosting with Docker
 
 Requirements: Node.js 22 or later, Docker with Compose v2, and persistent disk space.
 
@@ -65,7 +105,7 @@ node scripts/selfhost.mjs doctor
 node scripts/selfhost.mjs start
 ```
 
-Open [http://127.0.0.1:4141/setup](http://127.0.0.1:4141/setup). Use the generated installation token from your local `.env` file to create the first owner. Keep that file private. The installer does not overwrite an existing `.env`.
+Open [http://127.0.0.1:4141/setup](http://127.0.0.1:4141/setup). Use the generated installation token from your local `.env` file to create the first owner. Keep that file private. The installer does not overwrite an existing `.env`. The same commands are available as `npx panini-work selfhost <command>`.
 
 ```sh
 node scripts/selfhost.mjs stop
@@ -129,9 +169,34 @@ Enabling processing can send permitted source text to the configured providers a
 
 ## Connect an agent
 
-Create an agent profile in the app's **Agents** view and save its one-time enrollment secret privately. MCP is served at `/mcp` and requires the enrolled profile's Bearer token. Grant only the access the agent needs.
+Use `npx panini-work connect`, or create a profile in the **Agents** view and follow its setup recipe. MCP is served at `/mcp`. Agents authenticate with their profile's secret, or with MCP OAuth 2.1 (PKCE, one-hour access tokens bound to `/mcp`, rotating refresh tokens); a member approves each new OAuth client in the browser. Grant only the access the agent needs.
+
+What an agent does through Panini:
+
+- `context_get` returns its session, the task it holds, the last handoff note on that task, unconfirmed team notes, and company context.
+- `task_claim` and `task_release` say who is working on what. A claim expires after two hours without activity on the task, and starts planned work.
+- `work_report`, `handoff_write`, `note_drop` and `decision_propose` add evidence, handoffs, shared notes and decision drafts.
+- Every tool call is logged per agent session by id, never by content. The **Agents** view shows each session: owner, claimed task, reads, writes, denied calls, cost, and a one-click rollback of what the session wrote.
+
+Claude Code hooks report session start and end to `/api/agent/hooks`. Point an agent's OpenTelemetry log export (OTLP over HTTP with JSON) at `/api/agent/otlp/v1/logs` with its token to see cost per session. Set `OTEL_EXPORTER_OTLP_ENDPOINT` on the server to export each tool call as an `execute_tool` span.
 
 See [agent setup](docs/agent-setup.md), [Codex integration](integrations/codex/README.md), [Claude Code integration](integrations/claude-code/README.md), and [Slack integration](integrations/slack/README.md).
+
+## Changes apply at once
+
+Nothing waits for a person. Agents and the nightly run create and change tasks, context and decisions directly. Each change records who made it, why, and its sources.
+
+- **Changes** lists every recent change with an **Undo** button.
+- **Agents** can undo everything one session did, or revoke the agent.
+- Access rules still apply: an agent changes only what its profile can reach.
+
+## Scheduled reconcile
+
+The worker model no longer runs on every message. Once per `PANINI_RECONCILE_INTERVAL_HOURS` (default 24), or when an admin presses **Run now** on Home, it reads every new source observation since the last run. Agent claims, handoffs and reports apply immediately by rule. Threads are read in parallel (`PANINI_RECONCILE_CONCURRENCY`, default 3) and a `:panini:` reaction on a Slack message runs it at once. Set `PANINI_RECONCILE_MODE=live` for the previous per-message behaviour, and `PANINI_DIGEST_WEBHOOK_URL` to post the digest after each run. Any OpenAI Responses-compatible model works with `INTELLIGENCE_MODEL` plus `INTELLIGENCE_PRICE_INPUT_PER_MILLION` and `INTELLIGENCE_PRICE_OUTPUT_PER_MILLION`.
+
+## Rotating the content key
+
+Set the new key in `CONTENT_ENCRYPTION_KEY`, a new `CONTENT_ENCRYPTION_KEY_VERSION` (for example `v2`), and keep the old key readable with `CONTENT_ENCRYPTION_PREVIOUS_KEYS=v1:<old key>`. New data uses the new key; old data still decrypts.
 
 ## Verify changes
 
@@ -142,7 +207,7 @@ pnpm test
 pnpm format:check
 ```
 
-The database-backed suite requires a disposable PostgreSQL database; browser tests also need Chromium. The complete configured suite passes locally (299 tests, including all browser tests). See [repeatable verification](docs/production-verification.md) for the environment and commands. These are fixture checks, not live provider accuracy results.
+The database-backed suite requires a disposable PostgreSQL database; browser tests also need Chromium. The database-backed suite passed locally on 2026-11-14 (206 passed, 2 browser tests skipped because Chromium was not installed). See [repeatable verification](docs/production-verification.md) for the environment and commands. These are fixture checks, not live provider accuracy results.
 
 The process E2E check starts separate server and worker processes with local provider stubs. It checks accepted writes, source time, and restart behavior, and saves a JSON receipt under `artifacts/observation-agent/`.
 
@@ -162,7 +227,8 @@ Use a disposable database account that can create test databases. Run with `PANI
 | `src/intelligence/`         | Observation processing, model calls, and budgets |
 | `src/domain/`               | Work rules, evidence, access, and contracts      |
 | `src/store/`, `drizzle/`    | PostgreSQL storage and schema migrations         |
-| `src/http/`, `public/`      | Web app and assets                               |
+| `src/http/`, `public/`      | Web server, app shell and assets                 |
+| `src/client/`               | Web app browser code (TypeScript)                |
 | `src/mcp/`, `integrations/` | Agent access and harness integrations            |
 | `scripts/`, `test/`         | Installation and repeatable verification         |
 | `config/`, `docs/`          | Configuration examples and operating guides      |

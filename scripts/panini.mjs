@@ -9,8 +9,44 @@ const manifest = JSON.parse(
 	await readFile(join(packageRoot, "package.json"), "utf8"),
 );
 
-if (["--version", "-v"].includes(process.argv[2])) {
+const selfhostCommands = new Set([
+	"init",
+	"doctor",
+	"start",
+	"stop",
+	"backup",
+	"restore",
+	"update",
+	"recover",
+]);
+const command = process.argv[2];
+
+if (command === "selfhost") process.argv.splice(2, 1);
+if (["--version", "-v"].includes(command)) {
 	console.log(manifest.version);
+} else if (command === "connect") {
+	process.argv.splice(2, 1);
+	await import(
+		pathToFileURL(
+			join(packageRoot, "dist", "src", "quickstart", "connect.js"),
+		).href
+	);
+} else if (
+	command === undefined ||
+	command === "up" ||
+	command.startsWith("--")
+) {
+	// Quickstart: embedded PostgreSQL, a demo company, no Docker and no API key.
+	if (command === "up") process.argv.splice(2, 1);
+	await import(
+		pathToFileURL(join(packageRoot, "dist", "src", "quickstart", "cli.js"))
+			.href
+	);
+} else if (!selfhostCommands.has(process.argv[2])) {
+	console.error(
+		`Unknown command ${command}. Use: panini, panini connect, or panini selfhost <init|doctor|start|stop|backup|restore|update|recover>.`,
+	);
+	process.exitCode = 2;
 } else {
 	const index = process.argv.indexOf("--directory");
 
@@ -48,6 +84,7 @@ if (["--version", "-v"].includes(process.argv[2])) {
 			"pnpm-workspace.yaml",
 			"tsconfig.json",
 			"tsconfig.build.json",
+			"tsconfig.client.json",
 			"src",
 			"drizzle",
 			"public",

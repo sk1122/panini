@@ -3,16 +3,17 @@ import type { SlackCaptureAdapter } from "../src/connectors/slack/socket-mode.js
 import { SlackSocketSupervisor } from "../src/connectors/slack/supervisor.js";
 import { ProposalPolicy } from "../src/domain/policy.js";
 import { TeamLedger } from "../src/domain/team-ledger.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { testStore } from "./helpers/test-store.js";
 
 afterEach(() => vi.useRealTimers());
 
 describe("SlackSocketSupervisor", () => {
 	it("marks failed connections degraded and reconnects with bounded backoff", async () => {
-		vi.useFakeTimers();
+		// Real time keeps advancing so the PostgreSQL client can still talk to the database.
+		vi.useFakeTimers({ shouldAdvanceTime: true });
 
 		const ledger = new TeamLedger(
-			new MemoryLedgerStore(),
+			await testStore(),
 			new ProposalPolicy({
 				autoApproveNewTasks: true,
 				autoApproveContext: true,
@@ -60,19 +61,21 @@ describe("SlackSocketSupervisor", () => {
 		await vi.advanceTimersByTimeAsync(100);
 		expect(attempt).toBe(2);
 		(open as (() => void) | null)?.();
-		await Promise.resolve();
-		await Promise.resolve();
-		expect((await ledger.workspace()).installations[0]).toMatchObject({
-			status: "healthy",
-			lastError: null,
-		});
+		// The health update is a database write; wait for it rather than for microtasks.
+		await vi.waitFor(async () =>
+			expect((await ledger.workspace()).installations[0]).toMatchObject({
+				status: "healthy",
+				lastError: null,
+			}),
+		);
 		supervisor.stop();
 	});
 
 	it("allows only one Socket Mode owner through the singleton lease", async () => {
-		vi.useFakeTimers();
+		// Real time keeps advancing so the PostgreSQL client can still talk to the database.
+		vi.useFakeTimers({ shouldAdvanceTime: true });
 
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ledger = new TeamLedger(
 			store,
 			new ProposalPolicy({
@@ -134,9 +137,10 @@ describe("SlackSocketSupervisor", () => {
 		expect(secondConnections).toBe(0);
 
 		first.stop();
-		await Promise.resolve();
-		await vi.advanceTimersByTimeAsync(100);
-		expect(secondConnections).toBe(1);
+		await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+			expect(secondConnections).toBe(1);
+		});
 		second.stop();
 	});
 });

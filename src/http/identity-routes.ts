@@ -63,9 +63,11 @@ export function equalSecret(
 }
 
 export function safeReturnPath(value: unknown): string {
-	return typeof value === "string" && /^\/app(?:\/[a-z-]+)?$/.test(value)
+	// Only app pages, plus a connect request id so approval survives sign-in.
+	return typeof value === "string" &&
+		/^\/app(?:\/[a-z-]+)?(?:\?request=[0-9a-f-]{36})?$/.test(value)
 		? value
-		: "/app/projects";
+		: "/app/home";
 }
 
 export function isGithubLoginCallback(request: FastifyRequest): boolean {
@@ -104,6 +106,12 @@ export function installIdentityRoutes(
 	const anonymousApi = new Set([
 		"/api/webhooks/github",
 		"/api/relay/work-reports",
+		// Authenticated by the agent's own enrollment secret inside the route.
+		"/api/agent/hooks",
+		"/api/agent/otlp/v1/logs",
+		// Connect requests: a member must approve each one in the browser.
+		"/api/connect/start",
+		"/api/connect/poll",
 	]);
 	const address = new URL(origin);
 	const loopback = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -124,7 +132,7 @@ export function installIdentityRoutes(
 		new URL(options.github.credentials.callbackUrl).origin === origin,
 	);
 	const cipher = options.encryptionKey
-		? new PayloadCipher(options.encryptionKey)
+		? PayloadCipher.fromEnvironment(options.encryptionKey)
 		: null;
 	const githubCookie = "panini_github_flow";
 

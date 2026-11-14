@@ -9,9 +9,19 @@ import {
 import { DomainError } from "./errors.js";
 import {
 	acceptedSourceEvents,
+	acceptedTaskSourceEventIds,
 	currentSourceEvents,
 	visibleAcceptedTasks as filterAcceptedTasksBySource,
 } from "./accepted-source-access.js";
+import {
+	validateHandoff,
+	type AgentLedgerStore,
+	type AgentSession,
+	type HandoffNote,
+	type SessionStartInput,
+	type TaskClaim,
+	type TeamNote,
+} from "./agent-ledger.js";
 import {
 	normalizeAgentWorkspacePath,
 	parseAgentWorkspaceUri,
@@ -29,6 +39,7 @@ import {
 	normalizeContextScope,
 	type AccessScope,
 } from "./access.js";
+import { blockedText, describeSession } from "./agent-story.js";
 import { ProposalPolicy } from "./policy.js";
 import { compileTaskPatch } from "../store/task-changes.js";
 import { decideEvidenceApplication } from "../intelligence/decision-policy.js";
@@ -234,6 +245,7 @@ export interface CreateTaskInput {
 	projectId?: string | null;
 	dueDate?: string | null;
 	dependencyRefs?: string[];
+	standing?: TaskFields["standing"];
 }
 
 export interface IngestResult {
@@ -321,7 +333,15 @@ function contextTemporalChanges(
 	};
 }
 
+/** "agent:<id>:<name>" or "member:<id>" to something a person can read. */
+export function actorName(actor: string): string {
+	const [kind, , ...rest] = actor.split(":");
+
+	return kind === "agent" && rest.length ? rest.join(":") : actor;
+}
+
 export class TeamLedger {
+	readonly agents: AgentLedgerStore;
 	private readonly retriever: ContextRetriever;
 	private readonly sourceDocuments: SourceDocumentReader;
 
@@ -331,11 +351,1235 @@ export class TeamLedger {
 		retriever?: ContextRetriever,
 		sourceDocuments?: SourceDocumentReader,
 	) {
+		this.agents = store.agentLedger;
 		this.sourceDocuments =
 			sourceDocuments ?? new LedgerSourceDocumentLibrary(store);
 		this.retriever =
 			retriever ??
 			new PostgresContextCompiler(store, this.sourceDocuments);
+	}
+
+	/**
+	 * Evidence about a task inherits the narrowest visibility of the sources behind it,
+	 * so a report on restricted work never becomes company-wide evidence.
+	 */
+	async taskEvidenceVisibility(task: Task): Promise<string> {
+		const ids = await acceptedTaskSourceEventIds(this.store, [task]);
+		const visibilities = [
+			...new Set(
+				(await this.store.getSourceEvents(ids)).map(
+					(event) => event.visibility,
+				),
+			),
+		]
+			.filter((visibility) => visibility !== "company")
+			.sort();
+
+		return visibilities[0] ?? "company";
+	}
+
+	private async recordLedgerEvidence(input: {
+		installationKey: string;
+		eventId: string;
+		eventKind: string;
+		sourceRef: string;
+		visibility: string;
+		payload: JsonValue;
+		occurredAt?: string;
+	}): Promise<SourceEvent> {
+		const now = new Date().toISOString();
+		const result = await this.store.appendSourceEvent({
+			provider: "agent",
+			installationKey: input.installationKey,
+			providerEventId: input.eventId,
+			eventKind: input.eventKind,
+			occurredAt: input.occurredAt ?? now,
+			fetchedAt: now,
+			sourceRef: input.sourceRef,
+			sourceUrl: null,
+			contentHash: contentHash(input.payload),
+			visibility: input.visibility,
+			payloadVersion: "agent-ledger-v1",
+			payload: input.payload,
+		});
+
+		return result.event;
+	}
+
+	resolveAgentSession(
+		access: Extract<AccessScope, { kind: "agent" }>,
+		input: Omit<SessionStartInput, "agentProfileId" | "memberId">,
+	): Promise<AgentSession> {
+		return this.agents.resolveSession({
+			...input,
+			agentProfileId: access.agentProfileId,
+			memberId: access.memberId,
+		});
+	}
+
+	/**
+	 * Fast-lane rule (spec 5.1): a claim by a member's agent accepts observed work
+	 * and moves planned work into progress. No model is involved.
+	 */
+	async claimTask(input: {
+		access: AccessScope;
+		session: AgentSession;
+		taskId: string;
+		actor: string;
+		inferred?: boolean;
+	}): Promise<{
+		claim: TaskClaim;
+		others: (TaskClaim & {
+			agentName: string | null;
+			owner: string | null;
+		})[];
+		task: Task;
+		handoff: HandoffNote | null;
+		applied: TaskProposalChanges;
+	}> {
+		let task = await this.getTaskForAccess(input.taskId, input.access);
+
+		if (!task)
+			throw new DomainError(
+				`Task ${input.taskId} does not exist.`,
+				"NOT_FOUND",
+			);
+
+		const result = await this.agents.claimTask({
+			taskId: task.id,
+			session: input.session,
+			inferred: input.inferred ?? false,
+		});
+		const changes: TaskProposalChanges = {};
+
+		if (task.standing === "observed") changes.standing = "accepted";
+		if (task.status === "backlog" || task.status === "planned")
+			changes.status = "in_progress";
+		if (result.created && Object.keys(changes).length > 0) {
+			const event = await this.recordLedgerEvidence({
+				installationKey: input.session.agentProfileId,
+				eventId: `claim:${result.claim.id}`,
+				eventKind: "ledger.task_claimed",
+				// Each ledger receipt is its own source; a shared ref would supersede it.
+				sourceRef: `panini:claim:${result.claim.id}`,
+				visibility: await this.taskEvidenceVisibility(task),
+				payload: {
+					agent: input.actor,
+					sessionId: input.session.id,
+					taskId: task.id,
+					inferred: result.claim.inferred,
+				},
+				occurredAt: result.claim.claimedAt,
+			});
+			const proposal = await this.store.createProposal({
+				clientEventId: `claim:${result.claim.id}`,
+				kind: "task_change",
+				taskId: task.id,
+				baseVersion: task.version,
+				changes,
+				rationale: `${actorName(input.actor)} claimed this task.`,
+				requestedBy: input.actor,
+				evidenceIds: [event.id],
+			});
+
+			task = (
+				await this.store.approveAndApplyProposal({
+					proposalId: proposal.id,
+					state: "approved",
+					decidedBy: "rule:task_claim",
+					decisionNote:
+						"A claim by a member's agent accepts the task and starts it.",
+					auditAction: "rule.task_claim_applied",
+				})
+			).current;
+		}
+
+		const profiles = new Map(
+			(await this.store.listAgentProfiles()).map((profile) => [
+				profile.id,
+				profile,
+			]),
+		);
+		const [handoff] = await this.agents.listHandoffs(task.id, 1);
+
+		return {
+			claim: result.claim,
+			others: result.others.map((claim) => ({
+				...claim,
+				agentName: profiles.get(claim.agentProfileId)?.name ?? null,
+				owner: profiles.get(claim.agentProfileId)?.owner ?? null,
+			})),
+			task,
+			handoff: handoff ?? null,
+			applied: result.created ? changes : {},
+		};
+	}
+
+	async releaseTaskClaims(input: {
+		session: AgentSession;
+		taskId?: string;
+	}): Promise<TaskClaim[]> {
+		return this.agents.releaseClaims(
+			{
+				sessionId: input.session.id,
+				...(input.taskId ? { taskId: input.taskId } : {}),
+			},
+			"released",
+		);
+	}
+
+	/** The task owner, a project owner or an admin may clear any claim on a task. */
+	async clearTaskClaims(taskId: string, actor: string): Promise<TaskClaim[]> {
+		const cleared = await this.agents.releaseClaims(
+			{ taskId },
+			"taken_over",
+		);
+
+		if (cleared.length > 0)
+			await this.store.appendAuditEvent({
+				actor,
+				action: "task.claims_cleared",
+				targetType: "task",
+				targetId: taskId,
+				sourceEventId: null,
+				proposalId: null,
+				details: { claimIds: cleared.map((claim) => claim.id) },
+			});
+		return cleared;
+	}
+
+	async writeHandoff(input: {
+		access: AccessScope;
+		session: AgentSession | null;
+		taskId: string;
+		author: string;
+		done: string;
+		notDone: string;
+		openQuestions: string;
+		nextStep: string;
+		artifacts: string[];
+		clientEventId: string;
+	}): Promise<HandoffNote> {
+		const task = await this.getTaskForAccess(input.taskId, input.access);
+
+		if (!task)
+			throw new DomainError(
+				`Task ${input.taskId} does not exist.`,
+				"NOT_FOUND",
+			);
+		validateHandoff(input);
+
+		const fields = {
+			done: input.done,
+			notDone: input.notDone,
+			openQuestions: input.openQuestions,
+			nextStep: input.nextStep,
+			artifacts: input.artifacts,
+		};
+		const event = await this.recordLedgerEvidence({
+			installationKey: input.session?.agentProfileId ?? "member",
+			eventId: `handoff:${input.author}:${input.clientEventId}`,
+			eventKind: "ledger.handoff",
+			sourceRef: `panini:handoff:${input.author}:${input.clientEventId}`,
+			visibility: await this.taskEvidenceVisibility(task),
+			payload: { author: input.author, taskId: task.id, ...fields },
+		});
+		const existing = (await this.agents.listHandoffs(task.id, 50)).find(
+			(note) => note.sourceEventId === event.id,
+		);
+
+		if (existing) return existing;
+		return this.agents.addHandoff({
+			taskId: task.id,
+			sessionId: input.session?.id ?? null,
+			agentProfileId: input.session?.agentProfileId ?? null,
+			memberId:
+				input.access.kind === "admin" ? null : input.access.memberId,
+			author: input.author,
+			...fields,
+			sourceEventId: event.id,
+		});
+	}
+
+	/** The shared dump space: a note is class C evidence, sorted later by the reconcile run. */
+	async dropNote(input: {
+		access: AccessScope;
+		session: AgentSession | null;
+		author: string;
+		text: string;
+		taskId: string | null;
+		project: string | null;
+		links: string[];
+		clientEventId: string;
+	}): Promise<TeamNote> {
+		const text = input.text.trim();
+
+		if (!text || text.length > 8_000)
+			throw new DomainError(
+				"A note needs between 1 and 8,000 characters.",
+				"INVALID",
+			);
+
+		const task = input.taskId
+			? await this.getTaskForAccess(input.taskId, input.access)
+			: null;
+
+		if (input.taskId && !task)
+			throw new DomainError(
+				`Task ${input.taskId} does not exist.`,
+				"NOT_FOUND",
+			);
+
+		const project = task?.project ?? input.project;
+
+		if (project && !canReadProject(input.access, project))
+			throw new DomainError(
+				"The authenticated principal cannot write notes outside its project scope.",
+				"FORBIDDEN",
+			);
+
+		const visibility = task
+			? await this.taskEvidenceVisibility(task)
+			: "company";
+		const event = await this.recordLedgerEvidence({
+			installationKey: input.session?.agentProfileId ?? "member",
+			eventId: `note:${input.author}:${input.clientEventId}`,
+			eventKind: "note.dropped",
+			sourceRef: `panini:note:${input.author}:${input.clientEventId}`,
+			visibility,
+			payload: {
+				author: input.author,
+				text,
+				taskId: task?.id ?? null,
+				project,
+				links: input.links,
+			},
+		});
+		const existing = (await this.agents.listNotes({ limit: 500 })).find(
+			(note) => note.sourceEventId === event.id,
+		);
+
+		if (existing) return existing;
+		return this.agents.addNote({
+			author: input.author,
+			agentProfileId: input.session?.agentProfileId ?? null,
+			memberId:
+				input.access.kind === "admin" ? null : input.access.memberId,
+			sessionId: input.session?.id ?? null,
+			project,
+			taskId: task?.id ?? null,
+			text,
+			links: input.links,
+			visibility,
+			sourceEventId: event.id,
+		});
+	}
+
+	/** Notes the principal may read: every note's source must be visible to it. */
+	async visibleNotes(
+		access: AccessScope,
+		filter: { state?: TeamNote["state"]; limit?: number } = {},
+	): Promise<TeamNote[]> {
+		const notes = await this.agents.listNotes({
+			limit: 500,
+			...(filter.state ? { state: filter.state } : {}),
+		});
+
+		return notes
+			.filter(
+				(note) =>
+					canReadVisibility(access, note.visibility) &&
+					(!note.project || canReadProject(access, note.project)),
+			)
+			.slice(0, filter.limit ?? 100);
+	}
+
+	async setNoteState(
+		id: string,
+		state: TeamNote["state"],
+		actor: string,
+	): Promise<TeamNote> {
+		const note = await this.agents.setNoteState(id, state);
+
+		await this.store.appendAuditEvent({
+			actor,
+			action: `note.${state}`,
+			targetType: "team_note",
+			targetId: id,
+			sourceEventId: note.sourceEventId,
+			proposalId: null,
+			details: {},
+		});
+		return note;
+	}
+
+	/**
+	 * A decision is a context file under /decisions. An agent may draft one;
+	 * it becomes accepted only when a member approves the proposal.
+	 */
+	async proposeDecision(input: {
+		access: AccessScope;
+		session: AgentSession | null;
+		clientEventId: string;
+		title: string;
+		statement: string;
+		reason: string;
+		rejectedOptions: string[];
+		decidedBy: string;
+		decidedAt: string;
+		supersedes: string | null;
+		path?: string;
+		evidenceIds: string[];
+		requestedBy: string;
+	}): Promise<Proposal> {
+		const slug =
+			input.title
+				.toLowerCase()
+				.replace(/[^a-z0-9]+/g, "-")
+				.replace(/^-|-$/g, "")
+				.slice(0, 80) || "decision";
+		const path = normalizeContextPath(
+			input.path ?? `/decisions/${slug}`,
+			"file",
+		);
+		const body = [
+			`# ${input.title}`,
+			"",
+			`Decision: ${input.statement}`,
+			"",
+			`Reason: ${input.reason || "Not recorded."}`,
+			"",
+			"Options rejected:",
+			...(input.rejectedOptions.length
+				? input.rejectedOptions.map((option) => `- ${option}`)
+				: ["- None recorded."]),
+			"",
+			`Decided by: ${input.decidedBy}`,
+			`Decided at: ${input.decidedAt}`,
+			...(input.supersedes ? [`Supersedes: ${input.supersedes}`] : []),
+		].join("\n");
+		const event = await this.recordLedgerEvidence({
+			installationKey: input.session?.agentProfileId ?? "member",
+			eventId: `decision:${input.requestedBy}:${input.clientEventId}`,
+			eventKind: "ledger.decision_drafted",
+			sourceRef: `panini:decision:${path}`,
+			visibility: "company",
+			payload: {
+				author: input.requestedBy,
+				title: input.title,
+				statement: input.statement,
+				reason: input.reason,
+				rejectedOptions: input.rejectedOptions,
+				decidedBy: input.decidedBy,
+				decidedAt: input.decidedAt,
+				supersedes: input.supersedes,
+			},
+		});
+
+		return this.proposeContextFileForAccess(
+			{
+				clientEventId: input.clientEventId,
+				sourceRef: `panini:decision:${path}`,
+				path,
+				title: input.title,
+				body,
+				rationale: `Decision by ${input.decidedBy}, recorded by ${actorName(input.requestedBy)}.`,
+				requestedBy: input.requestedBy,
+				evidenceIds: [...new Set([event.id, ...input.evidenceIds])],
+				effectiveFrom: input.decidedAt,
+			},
+			input.access,
+		);
+	}
+
+	/**
+	 * "This is wrong": a member's correction becomes evidence plus a proposal on
+	 * the same entry. The accepted value changes only when the proposal is approved.
+	 */
+	async proposeContextCorrection(input: {
+		entryId: string;
+		correction: string;
+		reason: string;
+		actor: string;
+		access: AccessScope;
+		clientEventId: string;
+	}): Promise<Proposal> {
+		const entry = await this.store.getContextEntry(input.entryId);
+
+		if (!entry || !canReadContextPath(input.access, entry.path))
+			throw new DomainError("Context entry not found.", "NOT_FOUND");
+
+		const correction = input.correction.trim();
+
+		if (!correction)
+			throw new DomainError("A correction cannot be empty.", "INVALID");
+
+		const now = new Date().toISOString();
+		const payload = {
+			entryId: entry.id,
+			path: entry.path,
+			correction,
+			reason: input.reason,
+		};
+		const event = (
+			await this.store.appendSourceEvent({
+				provider: "member",
+				installationKey: input.actor,
+				providerEventId: `correction:${input.clientEventId}`,
+				eventKind: "context.correction",
+				occurredAt: now,
+				fetchedAt: now,
+				sourceRef: `panini:correction:${input.clientEventId}`,
+				sourceUrl: null,
+				contentHash: contentHash(payload),
+				visibility: "company",
+				payloadVersion: "correction-v1",
+				payload,
+			})
+		).event;
+		const common = {
+			clientEventId: input.clientEventId,
+			sourceRef: entry.sourceRef,
+			path: entry.path,
+			title: entry.title,
+			sourceUrl: entry.sourceUrl,
+			rationale: `Correction by ${actorName(input.actor)}: ${input.reason || "marked as wrong"}`,
+			requestedBy: input.actor,
+			evidenceIds: [event.id],
+			effectiveFrom: now,
+			links: entry.links,
+		};
+
+		if (entry.kind === "file")
+			return this.proposeContextFile({ ...common, body: correction });
+
+		const value =
+			typeof entry.value === "number"
+				? Number(correction)
+				: typeof entry.value === "boolean"
+					? ["true", "yes", "1"].includes(correction.toLowerCase())
+					: correction;
+
+		if (typeof value === "number" && Number.isNaN(value))
+			throw new DomainError("This fact needs a number.", "INVALID");
+		return this.proposeContextFact({
+			...common,
+			factType: entry.factType,
+			value,
+		});
+	}
+
+	/** The daily digest (spec 10.8): what needs you, what your agents did, what changed. */
+	async digest(
+		access: AccessScope,
+		options: { since?: string; title?: string } = {},
+	): Promise<{ markdown: string; counts: Record<string, number> }> {
+		const since =
+			options.since ??
+			new Date(Date.now() - 24 * 3_600_000).toISOString();
+		const [home, overview] = await Promise.all([
+			this.homeProjection(access),
+			this.agentOverview(access, { since }),
+		]);
+		const names = new Map(
+			overview.profiles.map((profile) => [profile.id, profile.name]),
+		);
+		const changed = home.changed.filter((item) => item.occurredAt >= since);
+		const denied = overview.sessions.reduce(
+			(total, session) => total + session.counts.denied,
+			0,
+		);
+		const lines = [
+			`# ${options.title ?? "Panini digest"}`,
+			"",
+			"## Needs you",
+			home.needs.observedCount
+				? `- ${home.needs.observedCount} observed task(s) to accept or dismiss`
+				: null,
+			home.needs.proposalCount
+				? `- ${home.needs.proposalCount} proposal(s) to decide`
+				: null,
+			home.needs.noteCount
+				? `- ${home.needs.noteCount} team note(s) to keep or dismiss`
+				: null,
+			home.needs.observedCount +
+			home.needs.proposalCount +
+			home.needs.noteCount
+				? null
+				: "- Nothing.",
+			"",
+			"## Agents",
+			...overview.sessions.map((session) => {
+				const tasks = session.claims
+					.map((claim) => overview.tasks[claim.taskId]?.title)
+					.filter(Boolean);
+
+				return `- ${names.get(session.agentProfileId) ?? "Agent"}: ${session.state}, ${session.counts.reads} reads, ${session.counts.writes} writes${session.counts.denied ? `, ${session.counts.denied} denied` : ""}${tasks.length ? ` on ${tasks.join(", ")}` : ""}`;
+			}),
+			overview.sessions.length ? null : "- No agent sessions.",
+			"",
+			"## Changed",
+			...changed
+				.slice(0, 15)
+				.map((item) => `- ${item.title}: ${item.summary}`),
+			changed.length ? null : "- No accepted changes.",
+		].filter((line): line is string => line !== null);
+
+		return {
+			markdown: lines.join("\n"),
+			counts: {
+				observed: home.needs.observedCount,
+				proposals: home.needs.proposalCount,
+				notes: home.needs.noteCount,
+				sessions: overview.sessions.length,
+				denied,
+				changed: changed.length,
+			},
+		};
+	}
+
+	listReconcileRuns(limit = 10) {
+		return this.store.reconcileRuns?.list(limit) ?? Promise.resolve([]);
+	}
+
+	/** Profiles a principal may oversee: members see their own agents, admins see all. */
+	async overseenAgentProfiles(access: AccessScope): Promise<AgentProfile[]> {
+		const profiles = await this.store.listAgentProfiles();
+
+		if (access.kind === "admin") return profiles;
+		return profiles.filter(
+			(profile) => profile.memberId === access.memberId,
+		);
+	}
+
+	async agentOverview(
+		access: AccessScope,
+		options: { since?: string; limit?: number } = {},
+	) {
+		const profiles = await this.overseenAgentProfiles(access);
+		const ids = profiles.map((profile) => profile.id);
+
+		if (ids.length === 0) return { profiles: [], sessions: [], tasks: {} };
+
+		const sessions = await this.agents.listSessions({
+			agentProfileIds: ids,
+			limit: options.limit ?? 50,
+			...(options.since ? { since: options.since } : {}),
+		});
+		const taskIds = [
+			...new Set(
+				sessions.flatMap((session) =>
+					session.claims.map((claim) => claim.taskId),
+				),
+			),
+		];
+		const tasks: Record<string, { title: string; status: string }> = {};
+
+		for (const id of taskIds) {
+			const task = await this.store.getTask(id);
+
+			if (task) tasks[id] = { title: task.title, status: task.status };
+		}
+		return {
+			profiles: profiles.map((profile) => ({
+				id: profile.id,
+				name: profile.name,
+				owner: profile.owner,
+				memberId: profile.memberId,
+				harness: profile.harness,
+				status: profile.status,
+				lastUsedAt: profile.lastUsedAt,
+			})),
+			sessions,
+			tasks,
+		};
+	}
+
+	/**
+	 * One summary per agent for the Agents page: what it is doing now, what it
+	 * did last time in plain sentences, this week's totals, and anything blocked.
+	 */
+	async agentSummaries(access: AccessScope) {
+		const profiles = await this.overseenAgentProfiles(access);
+
+		if (profiles.length === 0) return { agents: [] };
+
+		const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+		const [sessions, board] = await Promise.all([
+			this.agents.listSessions({
+				agentProfileIds: profiles.map((profile) => profile.id),
+				limit: 500,
+			}),
+			this.board(access),
+		]);
+		const titles = new Map(
+			board.tasks.map((task) => [task.id, task.title]),
+		);
+		const agents = [];
+
+		for (const profile of profiles) {
+			const own = sessions.filter(
+				(session) => session.agentProfileId === profile.id,
+			);
+			const latest = own[0] ?? null;
+			const live = own.find(
+				(session) =>
+					session.state === "active" || session.state === "idle",
+			);
+			const activeClaim = own
+				.flatMap((session) => session.claims)
+				.find((claim) => claim.state === "active");
+			const week = own.filter((session) => session.lastSeenAt >= weekAgo);
+			const weekActivity = week.length
+				? await this.agents.listActivity({
+						agentProfileIds: [profile.id],
+						limit: 500,
+					})
+				: [];
+			const recent = weekActivity.filter(
+				(event) => event.occurredAt >= weekAgo,
+			);
+			const blocked = recent.filter(
+				(event) => event.outcome === "denied",
+			);
+			// Tasks it worked on: claimed, reported on or handed off, not just read.
+			const tasksTouched = [
+				...new Set(
+					recent
+						.filter(
+							(event) =>
+								event.outcome === "ok" &&
+								[
+									"task_claim",
+									"work_report",
+									"handoff_write",
+								].includes(event.tool),
+						)
+						.flatMap((event) =>
+							event.targetIds
+								.filter((id) => titles.has(id))
+								.slice(0, 1),
+						),
+				),
+			];
+			const story = latest
+				? describeSession(
+						recent
+							.filter((event) => event.sessionId === latest.id)
+							.reverse(),
+						titles,
+						latest,
+					)
+				: [];
+			const costs = week
+				.map((session) => session.costUsd)
+				.filter((cost): cost is number => cost !== null);
+
+			agents.push({
+				id: profile.id,
+				name: profile.name,
+				owner: profile.owner,
+				harness: profile.harness,
+				status:
+					profile.status === "revoked"
+						? "disconnected"
+						: !profile.lastUsedAt && own.length === 0
+							? "never_connected"
+							: activeClaim && live
+								? "working"
+								: live?.state === "active"
+									? "active"
+									: "idle",
+				currentTask:
+					activeClaim && live
+						? {
+								id: activeClaim.taskId,
+								title:
+									titles.get(activeClaim.taskId) ?? "a task",
+							}
+						: null,
+				lastActiveAt: latest?.lastSeenAt ?? profile.lastUsedAt,
+				week: {
+					sessions: week.length,
+					tasks: tasksTouched.map((id) => titles.get(id)!),
+					costUsd: costs.length
+						? costs.reduce((sum, cost) => sum + cost, 0)
+						: null,
+					blocked: blocked.map((event) => ({
+						at: event.occurredAt,
+						text: blockedText(event.tool, event.detail),
+					})),
+				},
+				lastSession: latest
+					? {
+							id: latest.id,
+							startedAt: latest.startedAt,
+							endedAt: latest.endedAt,
+							repository: latest.repository,
+							branch: latest.branch,
+							costUsd: latest.costUsd,
+							story,
+							wroteSomething: story.some(
+								(line) => line.kind === "write",
+							),
+						}
+					: null,
+				earlierSessions: own
+					.slice(1)
+					.filter(
+						(session) =>
+							session.counts.reads + session.counts.writes > 0 ||
+							session.claims.length > 0,
+					)
+					.slice(0, 8)
+					.map((session) => ({
+						id: session.id,
+						startedAt: session.startedAt,
+						lastSeenAt: session.lastSeenAt,
+						tasks: session.claims.map(
+							(claim) => titles.get(claim.taskId) ?? "a task",
+						),
+						costUsd: session.costUsd,
+						calls: session.counts.reads + session.counts.writes,
+					})),
+			});
+		}
+
+		const order: Record<string, number> = {
+			working: 0,
+			active: 1,
+			idle: 2,
+			never_connected: 3,
+			disconnected: 4,
+		};
+
+		agents.sort(
+			(a, b) =>
+				(order[a.status] ?? 9) - (order[b.status] ?? 9) ||
+				(b.lastActiveAt ?? "").localeCompare(a.lastActiveAt ?? ""),
+		);
+		return { agents };
+	}
+
+	/** One session's activity, told in plain sentences. */
+	async sessionStory(sessionId: string, access: AccessScope) {
+		const session = await this.agents.getSession(sessionId);
+		const allowed = new Set(
+			(await this.overseenAgentProfiles(access)).map(
+				(profile) => profile.id,
+			),
+		);
+
+		if (!session || !allowed.has(session.agentProfileId))
+			throw new DomainError("Session not found.", "NOT_FOUND");
+
+		const [events, board] = await Promise.all([
+			this.agents.listActivity({ sessionId, limit: 500 }),
+			this.board(access),
+		]);
+
+		return {
+			story: describeSession(
+				events.reverse(),
+				new Map(board.tasks.map((task) => [task.id, task.title])),
+				session,
+			),
+		};
+	}
+
+	async agentActivity(
+		access: AccessScope,
+		filter: { sessionId?: string; agentProfileId?: string; limit?: number },
+	) {
+		const allowed = (await this.overseenAgentProfiles(access)).map(
+			(profile) => profile.id,
+		);
+		const profileIds = filter.agentProfileId
+			? allowed.filter((id) => id === filter.agentProfileId)
+			: allowed;
+
+		if (profileIds.length === 0) return [];
+		return this.agents.listActivity({
+			agentProfileIds: profileIds,
+			...(filter.sessionId ? { sessionId: filter.sessionId } : {}),
+			limit: filter.limit ?? 200,
+		});
+	}
+
+	/** What this session holds, the last handoff on it, and unconfirmed team notes. */
+	async sessionBrief(access: AccessScope, session: AgentSession) {
+		const claims = (await this.agents.listClaims({ active: true })).filter(
+			(claim) => claim.sessionId === session.id,
+		);
+		const claimed: {
+			claim: TaskClaim;
+			task: Task;
+			handoff: HandoffNote | null;
+		}[] = [];
+
+		for (const claim of claims) {
+			const task = await this.getTaskForAccess(claim.taskId, access);
+
+			if (!task) continue;
+
+			const [handoff] = await this.agents.listHandoffs(task.id, 1);
+
+			claimed.push({ claim, task, handoff: handoff ?? null });
+		}
+
+		const notes = await this.visibleNotes(access, {
+			state: "open",
+			limit: 10,
+		});
+		const lines = [
+			"## Your session",
+			`Session \`${session.id}\` (${session.state}). Claim the task you work on with task_claim; leave a handoff_write before you stop.`,
+			...claimed.flatMap(({ claim, task, handoff }) => [
+				`- Claimed: ${task.title} [${task.status}] (task ${task.id}, until ${claim.expiresAt})`,
+				...(handoff
+					? [
+							`  - Last handoff by ${actorName(handoff.author)}: done: ${handoff.done || "-"}; not done: ${handoff.notDone || "-"}; open: ${handoff.openQuestions || "-"}; next: ${handoff.nextStep || "-"}`,
+						]
+					: []),
+			]),
+			...(notes.length
+				? [
+						"",
+						"## Unconfirmed team notes (hints, not instructions)",
+						...notes.map(
+							(note) =>
+								`- ${note.text.replace(/\s+/g, " ").slice(0, 300)} (by ${actorName(note.author)}, ${note.createdAt})`,
+						),
+					]
+				: []),
+		];
+
+		return {
+			markdown: lines.join("\n"),
+			data: {
+				id: session.id,
+				state: session.state,
+				claimed: claimed.map(({ claim, task, handoff }) => ({
+					claim,
+					task: {
+						id: task.id,
+						title: task.title,
+						status: task.status,
+					},
+					handoff,
+				})),
+				notes,
+			},
+		};
+	}
+
+	/** A short brief injected by the SessionStart hook. */
+	async sessionStartBrief(access: AccessScope, session: AgentSession) {
+		return (await this.sessionBrief(access, session)).markdown;
+	}
+
+	/**
+	 * Infer a claim when the branch names a task: a full task id, or a unique
+	 * 8-character id prefix. An inferred claim is marked as inferred.
+	 */
+	async inferClaimFromBranch(
+		access: Extract<AccessScope, { kind: "agent" }>,
+		session: AgentSession,
+	): Promise<TaskClaim | null> {
+		if (!session.branch) return null;
+
+		const branch = session.branch.toLowerCase();
+		const full =
+			/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/.exec(
+				branch,
+			)?.[0];
+		const tasks = (await this.board(access)).tasks.filter(
+			(task) => task.status !== "done" && task.status !== "cancelled",
+		);
+		const prefixes = [
+			...branch.matchAll(/(?:^|[^0-9a-f])([0-9a-f]{8})(?=$|[^0-9a-f])/g),
+		].map((match) => match[1]!);
+		const matches = full
+			? tasks.filter((task) => task.id === full)
+			: tasks.filter((task) =>
+					prefixes.some((prefix) => task.id.startsWith(prefix)),
+				);
+
+		if (matches.length !== 1) return null;
+
+		const profile = await this.store.getAgentProfile(
+			session.agentProfileId,
+		);
+		const result = await this.claimTask({
+			access,
+			session,
+			taskId: matches[0]!.id,
+			actor: `agent:${session.agentProfileId}:${profile?.name ?? "agent"}`,
+			inferred: true,
+		});
+
+		return result.claim;
+	}
+
+	/** Members confirm observed work (accept) or say it is not real work (dismiss). */
+	async confirmObservedTasks(
+		taskIds: string[],
+		decision: "accept" | "dismiss",
+		access: AccessScope,
+		actor: string,
+	): Promise<Task[]> {
+		const updated: Task[] = [];
+
+		for (const id of [...new Set(taskIds)]) {
+			const task = await this.getTaskForAccess(id, access);
+
+			if (!task)
+				throw new DomainError(
+					`Task ${id} does not exist.`,
+					"NOT_FOUND",
+				);
+
+			const changes: TaskProposalChanges =
+				decision === "accept"
+					? { standing: "accepted" }
+					: { standing: "accepted", status: "cancelled" };
+
+			if (
+				decision === "accept" &&
+				(task.standing ?? "accepted") === "accepted"
+			) {
+				updated.push(task);
+				continue;
+			}
+
+			const proposal = await this.store.createProposal({
+				clientEventId: null,
+				kind: "task_change",
+				taskId: task.id,
+				baseVersion: task.version,
+				changes,
+				rationale:
+					decision === "accept"
+						? "A member confirmed this observed task."
+						: "A member dismissed this observed item as not real work.",
+				requestedBy: actor,
+				evidenceIds: [],
+			});
+
+			updated.push(
+				(
+					await this.store.approveAndApplyProposal({
+						proposalId: proposal.id,
+						state: "approved",
+						decidedBy: actor,
+						decisionNote: null,
+						auditAction:
+							decision === "accept"
+								? "task.observed_accepted"
+								: "task.observed_dismissed",
+					})
+				).current,
+			);
+		}
+		return updated;
+	}
+
+	/**
+	 * Undo what one agent session wrote (spec 5.3): reject its open proposals,
+	 * dismiss its notes and release its claims. Accepted revisions stay in history
+	 * and can be undone per task.
+	 */
+	async rollbackSession(
+		sessionId: string,
+		access: AccessScope,
+		actor: string,
+	) {
+		const session = await this.agents.getSession(sessionId);
+		const allowed = new Set(
+			(await this.overseenAgentProfiles(access)).map(
+				(profile) => profile.id,
+			),
+		);
+
+		if (!session || !allowed.has(session.agentProfileId))
+			throw new DomainError("Session not found.", "NOT_FOUND");
+
+		const prefix = `agent:${session.agentProfileId}:`;
+		const until = new Date(
+			Date.parse(session.endedAt ?? session.lastSeenAt) + 1_000,
+		).toISOString();
+		const open = [
+			...(await this.store.listProposals("pending")),
+			...(await this.store.listProposals("escalated")),
+		].filter(
+			(proposal) =>
+				proposal.requestedBy.startsWith(prefix) &&
+				proposal.createdAt >= session.startedAt &&
+				proposal.createdAt <= until,
+		);
+		const rejected = [];
+
+		for (const proposal of open)
+			rejected.push(
+				await this.rejectProposal(
+					proposal.id,
+					actor,
+					`Rolled back with agent session ${session.id}.`,
+				),
+			);
+
+		const applied = [
+			...(await this.store.listProposals("auto_applied")),
+			...(await this.store.listProposals("approved")),
+		]
+			.filter(
+				(proposal) =>
+					proposal.requestedBy.startsWith(prefix) &&
+					proposal.createdAt >= session.startedAt &&
+					proposal.createdAt <= until,
+			)
+			.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+		let undone = 0;
+
+		for (const proposal of applied)
+			if ((await this.undoProposal(proposal.id, actor)).undone)
+				undone += 1;
+
+		const notes = (await this.agents.listNotes({ limit: 500 })).filter(
+			(note) => note.sessionId === session.id && note.state === "open",
+		);
+
+		for (const note of notes)
+			await this.setNoteState(note.id, "dismissed", actor);
+
+		const released = await this.agents.releaseClaims(
+			{ sessionId: session.id },
+			"taken_over",
+		);
+
+		await this.store.appendAuditEvent({
+			actor,
+			action: "agent_session.rolled_back",
+			targetType: "agent_session",
+			targetId: session.id,
+			sourceEventId: null,
+			proposalId: null,
+			details: {
+				rejectedProposals: rejected.map((proposal) => proposal.id),
+				undoneChanges: undone,
+				dismissedNotes: notes.map((note) => note.id),
+				releasedClaims: released.map((claim) => claim.id),
+			},
+		});
+		return {
+			rejectedProposals: rejected.length,
+			undoneChanges: undone,
+			dismissedNotes: notes.length,
+			releasedClaims: released.length,
+		};
+	}
+
+	/** Home: what needs me, who is working on what now, and what changed. */
+	async homeProjection(access: AccessScope) {
+		const [board, notes, history, workspace] = await Promise.all([
+			this.board(access),
+			this.visibleNotes(access, { state: "open", limit: 20 }),
+			this.historyProjection(40, "changes", access),
+			this.workspace(),
+		]);
+		const openTasks = board.tasks.filter(
+			(task) => task.status !== "done" && task.status !== "cancelled",
+		);
+		const observed = openTasks.filter(
+			(task) => task.standing === "observed",
+		);
+		const claims = await this.activeClaimsForTasks(
+			openTasks.map((task) => task.id),
+		);
+		const sessions = new Map<string, AgentSession | null>();
+
+		for (const claim of claims)
+			if (!sessions.has(claim.sessionId))
+				sessions.set(
+					claim.sessionId,
+					await this.agents.getSession(claim.sessionId),
+				);
+
+		const taskById = new Map(board.tasks.map((task) => [task.id, task]));
+
+		return {
+			needs: {
+				proposals: board.proposals.slice(0, 10).map((proposal) => ({
+					id: proposal.id,
+					kind: proposal.kind,
+					taskId: proposal.taskId,
+					rationale: proposal.rationale,
+					requestedBy: proposal.requestedBy,
+					state: proposal.state,
+					createdAt: proposal.createdAt,
+				})),
+				proposalCount: board.proposals.length,
+				observed: observed.slice(0, 20).map((task) => ({
+					id: task.id,
+					title: task.title,
+					status: task.status,
+					project: task.project,
+					updatedAt: task.updatedAt,
+				})),
+				observedCount: observed.length,
+				notes: notes.slice(0, 10),
+				noteCount: notes.length,
+			},
+			workingNow: claims.map((claim) => {
+				const session = sessions.get(claim.sessionId) ?? null;
+
+				return {
+					claimId: claim.id,
+					taskId: claim.taskId,
+					taskTitle:
+						taskById.get(claim.taskId)?.title ?? claim.taskId,
+					agentName: claim.agentName,
+					owner: claim.owner,
+					inferred: claim.inferred,
+					claimedAt: claim.claimedAt,
+					sessionState: session?.state ?? "expired",
+					lastSeenAt: session?.lastSeenAt ?? null,
+				};
+			}),
+			changed: history.items
+				.filter(
+					(item) =>
+						item.type === "task_revision" ||
+						item.type === "context_revision",
+				)
+				.slice(0, 15),
+			sources: workspace.installations.map((installation) => ({
+				provider: installation.provider,
+				displayName: installation.displayName,
+				status: installation.status,
+				lastSync:
+					workspace.connectorSyncs.find(
+						(sync) => sync.installationId === installation.id,
+					) ?? null,
+			})),
+			generatedAt: new Date().toISOString(),
+		};
+	}
+
+	async activeClaimsForTasks(taskIds: string[]) {
+		if (taskIds.length === 0) return [];
+
+		const [claims, profiles] = await Promise.all([
+			this.agents.listClaims({ taskIds, active: true }),
+			this.store.listAgentProfiles(),
+		]);
+		const names = new Map(profiles.map((profile) => [profile.id, profile]));
+
+		return claims.map((claim) => ({
+			...claim,
+			agentName: names.get(claim.agentProfileId)?.name ?? null,
+			owner: names.get(claim.agentProfileId)?.owner ?? null,
+		}));
 	}
 
 	async workspace(): Promise<WorkspaceSnapshot> {
@@ -1019,7 +2263,12 @@ export class TeamLedger {
 		actor = "system:direct",
 	): Promise<AgentProfile> {
 		const profile = await this.store.revokeAgentProfile(id);
+		const devices = (await this.store.listAgentDevices(id)).filter(
+			(device) => device.status === "active",
+		);
 
+		// A revoked profile must not keep posting through its relay devices.
+		for (const device of devices) await this.revokeDevice(device.id, actor);
 		await this.store.appendAuditEvent({
 			actor,
 			action: "agent_profile.revoked",
@@ -1027,7 +2276,7 @@ export class TeamLedger {
 			targetId: profile.id,
 			sourceEventId: null,
 			proposalId: null,
-			details: {},
+			details: { revokedDevices: devices.map((device) => device.id) },
 		});
 		return profile;
 	}
@@ -1196,6 +2445,31 @@ export class TeamLedger {
 		return { profile, member };
 	}
 
+	/** Store an immutable source observation; connectors and agent reports use this. */
+	recordSource(input: Parameters<LedgerStore["appendSourceEvent"]>[0]) {
+		return this.store.appendSourceEvent(input);
+	}
+
+	get oauth() {
+		return this.store.oauth ?? null;
+	}
+
+	/** For OAuth access tokens: the profile and its member must both still be active. */
+	async authenticateAgentProfile(
+		agentProfileId: string,
+	): Promise<AuthenticatedAgent | null> {
+		const profile = await this.store.getAgentProfile(agentProfileId);
+
+		if (!profile || profile.status !== "active" || !profile.memberId)
+			return null;
+
+		const member = await this.store.getMember(profile.memberId);
+
+		if (!member || member.status !== "active") return null;
+		await this.store.touchAgentProfile(profile.id);
+		return { profile, member };
+	}
+
 	agentWorkspaceRoot(
 		access: AccessScope,
 		scope: "agent" | "user" = "agent",
@@ -1208,19 +2482,39 @@ export class TeamLedger {
 		return `panini://${access.memberId}/${scope === "user" ? "user" : access.agentProfileId}/`;
 	}
 
-	async listAgentWorkspaceFiles(
+	/** Private files belong to a live profile; a revoked one loses access at once. */
+	private async requireActiveWorkspaceProfile(
 		access: AccessScope,
-		prefix = "",
-		scope: "agent" | "user" = "agent",
-	): Promise<AgentWorkspaceFileSummary[]> {
+	): Promise<Extract<AccessScope, { kind: "agent" }>> {
 		if (access.kind !== "agent")
 			throw new DomainError(
 				"An agent profile is required for a private workspace.",
 				"FORBIDDEN",
 			);
+
+		const profile = await this.store.getAgentProfile(access.agentProfileId);
+
+		if (
+			profile?.status !== "active" ||
+			profile.memberId !== access.memberId
+		)
+			throw new DomainError(
+				"This agent profile is revoked or belongs to another member.",
+				"FORBIDDEN",
+			);
+		return access;
+	}
+
+	async listAgentWorkspaceFiles(
+		access: AccessScope,
+		prefix = "",
+		scope: "agent" | "user" = "agent",
+	): Promise<AgentWorkspaceFileSummary[]> {
+		const agent = await this.requireActiveWorkspaceProfile(access);
+
 		return this.store.listAgentWorkspaceFiles(
-			access.memberId,
-			access.agentProfileId,
+			agent.memberId,
+			agent.agentProfileId,
 			prefix ? normalizeAgentWorkspacePath(prefix) : "",
 			scope,
 		);
@@ -1231,18 +2525,13 @@ export class TeamLedger {
 		uri: string,
 		scope: "agent" | "user" = "agent",
 	): Promise<AgentWorkspaceFile | null> {
-		if (access.kind !== "agent")
-			throw new DomainError(
-				"An agent profile is required for a private workspace.",
-				"FORBIDDEN",
-			);
-
+		const agent = await this.requireActiveWorkspaceProfile(access);
 		const parsed = parseAgentWorkspaceUri(uri);
 
 		if (
-			parsed.memberId !== access.memberId ||
+			parsed.memberId !== agent.memberId ||
 			parsed.agentProfileId !==
-				(scope === "user" ? "user" : access.agentProfileId)
+				(scope === "user" ? "user" : agent.agentProfileId)
 		) {
 			throw new DomainError(
 				"Agent workspace URI is outside this profile.",
@@ -1250,8 +2539,8 @@ export class TeamLedger {
 			);
 		}
 		return this.store.getAgentWorkspaceFile(
-			access.memberId,
-			access.agentProfileId,
+			agent.memberId,
+			agent.agentProfileId,
 			parsed.path,
 			scope,
 		);
@@ -1264,17 +2553,12 @@ export class TeamLedger {
 		expectedVersion: number,
 		scope: "agent" | "user" = "agent",
 	): Promise<AgentWorkspaceFileSummary> {
-		if (access.kind !== "agent")
-			throw new DomainError(
-				"An agent profile is required for a private workspace.",
-				"FORBIDDEN",
-			);
-
+		const agent = await this.requireActiveWorkspaceProfile(access);
 		const normalizedPath = normalizeAgentWorkspacePath(path);
 
 		return this.store.writeAgentWorkspaceFile({
-			memberId: access.memberId,
-			agentProfileId: access.agentProfileId,
+			memberId: agent.memberId,
+			agentProfileId: agent.agentProfileId,
 			path: normalizedPath,
 			scope,
 			content,
@@ -1538,6 +2822,7 @@ export class TeamLedger {
 			dependencyRefs: input.dependencyRefs ?? [],
 			sourceUrl: input.sourceUrl ?? null,
 			...(input.result !== undefined ? { result: input.result } : {}),
+			...(input.standing ? { standing: input.standing } : {}),
 		};
 		const proposalInput: NewProposal = {
 			clientEventId: input.clientEventId ?? null,
@@ -2806,6 +4091,253 @@ export class TeamLedger {
 			decisionNote: "Superseded by a rebased proposal.",
 			auditAction: "proposal.rebased",
 		});
+	}
+
+	/**
+	 * Reverts one applied change, whoever made it. Changes apply without a
+	 * person deciding first; this is how a person takes one back. Fields that
+	 * changed again since keep their newer value.
+	 */
+	async undoProposal(
+		proposalId: string,
+		actor: string,
+		access?: AccessScope,
+	): Promise<{ undone: boolean; reason: string | null }> {
+		const proposal = await this.store.getProposal(proposalId);
+
+		if (
+			!proposal ||
+			(access &&
+				!(await this.recentChanges(access, 1_000)).some(
+					(change) => change.proposalId === proposalId,
+				))
+		)
+			throw new DomainError("Change not found.", "NOT_FOUND");
+		if (proposal.state !== "approved" && proposal.state !== "auto_applied")
+			return { undone: false, reason: "This change was never applied." };
+		if ((await this.undoneProposalIds()).has(proposal.id))
+			return { undone: false, reason: "Already undone." };
+
+		const note = `Undid a change by ${actorName(proposal.requestedBy)}.`;
+
+		if (isContextProposal(proposal)) {
+			const revision = await this.store.getContextRevisionByProposal(
+				proposal.id,
+			);
+
+			if (!revision)
+				return {
+					undone: false,
+					reason: "Nothing was recorded to undo.",
+				};
+
+			const target = revision.previous ?? {
+				...revision.current,
+				lifecycleState: "superseded" as const,
+			};
+			const temporal = {
+				lifecycleState: target.lifecycleState,
+				effectiveFrom: target.effectiveFrom,
+				effectiveTo: target.effectiveTo,
+				links: target.links,
+			};
+			const base = {
+				clientEventId: `undo:${proposal.id}`,
+				taskId: null,
+				baseVersion: null,
+				rationale: note,
+				requestedBy: actor,
+				evidenceIds: proposal.evidenceIds,
+			};
+			const undo = await this.createProposalIdempotently(
+				target.kind === "file"
+					? {
+							...base,
+							kind: "context_file_upsert",
+							changes: {
+								sourceRef: target.sourceRef,
+								path: target.path,
+								title: target.title,
+								body: target.body,
+								sourceUrl: target.sourceUrl,
+								...temporal,
+							},
+						}
+					: {
+							...base,
+							kind: "context_fact_upsert",
+							changes: {
+								sourceRef: target.sourceRef,
+								path: target.path,
+								title: target.title,
+								factType: target.factType!,
+								value: target.value!,
+								sourceUrl: target.sourceUrl,
+								...temporal,
+							},
+						},
+			);
+
+			await this.store.approveAndApplyContextProposal({
+				proposalId: undo.id,
+				state: "approved",
+				decidedBy: actor,
+				decisionNote: note,
+				auditAction: "proposal.undone",
+				auditDetails: { undoneProposalId: proposal.id },
+			});
+		} else {
+			const revision = await this.store.getTaskRevisionByProposal(
+				proposal.id,
+			);
+
+			if (!revision)
+				return {
+					undone: false,
+					reason: "Nothing was recorded to undo.",
+				};
+
+			const task = await this.requireTask(revision.taskId);
+			const changes: TaskProposalChanges = {};
+
+			if (!revision.previous) {
+				if (task.status !== "cancelled") changes.status = "cancelled";
+			} else
+				for (const key of [
+					...mutableTaskKeys,
+					"result",
+					"outcomeContract",
+				] as const) {
+					const before = JSON.stringify(
+						revision.previous[key] ?? null,
+					);
+					const after = JSON.stringify(revision.current[key] ?? null);
+
+					// Only fields this change touched and nobody changed since.
+					if (
+						before !== after &&
+						after === JSON.stringify(task[key] ?? null)
+					)
+						Object.assign(changes, {
+							[key]:
+								key === "result"
+									? (revision.previous.result ?? "unknown")
+									: (revision.previous[key] ?? null),
+						});
+				}
+
+			if (Object.keys(changes).length === 0)
+				return {
+					undone: false,
+					reason: "The task changed again since; nothing left to undo.",
+				};
+
+			const undo = await this.createProposalIdempotently({
+				clientEventId: `undo:${proposal.id}`,
+				kind: "task_change",
+				taskId: task.id,
+				baseVersion: task.version,
+				changes,
+				rationale: note,
+				requestedBy: actor,
+				evidenceIds: [],
+			});
+
+			await this.store.approveAndApplyProposal({
+				proposalId: undo.id,
+				state: "approved",
+				decidedBy: actor,
+				decisionNote: note,
+				auditAction: "proposal.undone",
+				auditDetails: { undoneProposalId: proposal.id },
+			});
+		}
+		return { undone: true, reason: null };
+	}
+
+	private async undoneProposalIds(): Promise<Set<string>> {
+		return new Set(
+			(await this.store.listAuditEvents(5_000))
+				.filter((event) => event.action === "proposal.undone")
+				.map((event) => String(event.details?.undoneProposalId ?? "")),
+		);
+	}
+
+	/** Changes applied without a person deciding, newest first, for Undo. */
+	async recentChanges(access: AccessScope, limit = 100) {
+		const [autoApplied, approved, undone, tasks, entries] =
+			await Promise.all([
+				this.store.listProposals("auto_applied"),
+				this.store.listProposals("approved"),
+				this.undoneProposalIds(),
+				this.store.listTasks(),
+				this.store.listContextEntries(),
+			]);
+		const taskTitles = new Map(tasks.map((task) => [task.id, task.title]));
+		const changes = [];
+
+		for (const proposal of [...autoApplied, ...approved]
+			.filter((proposal) => !proposal.clientEventId?.startsWith("undo:"))
+			.sort((a, b) =>
+				(b.decidedAt ?? b.createdAt).localeCompare(
+					a.decidedAt ?? a.createdAt,
+				),
+			)) {
+			if (changes.length >= limit) break;
+
+			let title: string;
+			let target: { type: "task" | "context"; id: string | null };
+
+			if (isContextProposal(proposal)) {
+				const path =
+					"path" in proposal.changes
+						? String(proposal.changes.path)
+						: null;
+
+				if (path && !canReadContextPath(access, path)) continue;
+
+				const entry = entries.find((item) => item.path === path);
+
+				title =
+					"title" in proposal.changes
+						? String(proposal.changes.title)
+						: (entry?.title ?? "Company context");
+				target = { type: "context", id: entry?.id ?? null };
+			} else {
+				const revision = await this.store.getTaskRevisionByProposal(
+					proposal.id,
+				);
+				const taskId = proposal.taskId ?? revision?.taskId ?? null;
+				const task = tasks.find((item) => item.id === taskId);
+
+				if (task && !canReadTask(access, task)) continue;
+
+				title =
+					(taskId && taskTitles.get(taskId)) ??
+					proposal.changes.title ??
+					"A task";
+				target = { type: "task", id: taskId };
+			}
+			changes.push({
+				proposalId: proposal.id,
+				kind: proposal.kind,
+				title,
+				target,
+				fields: Object.keys(proposal.changes).filter(
+					(key) =>
+						!["sourceRef", "sourceUrl", "path", "links"].includes(
+							key,
+						),
+				),
+				changes: proposal.changes,
+				by: proposal.requestedBy,
+				byName: actorName(proposal.requestedBy),
+				why: proposal.rationale,
+				at: proposal.decidedAt ?? proposal.createdAt,
+				undone: undone.has(proposal.id),
+			});
+		}
+		return changes;
 	}
 
 	async undoTask(

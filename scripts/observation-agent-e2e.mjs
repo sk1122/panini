@@ -765,6 +765,36 @@ try {
 
 	const pool = new pg.Pool({ connectionString: targetUrl.toString() });
 
+	const processedState = async () =>
+		(
+			await pool.query(
+				`SELECT state FROM observation_dispositions
+        WHERE source_event_id=$1 AND pipeline_version=$2 ORDER BY attempt DESC LIMIT 1`,
+				[sourceId, `process-${suffix}`],
+			)
+		).rows[0]?.state ?? null;
+
+	// Scheduled mode: the model does not run when a message arrives.
+	await delay(1_500);
+	if ((await processedState()) !== null && !process.env.PANINI_RECONCILE_MODE)
+		throw new Error("the message was processed before any reconcile run");
+
+	const runNow = await fetch(`${origin}/api/reconcile/run`, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			authorization: `Bearer ${token}`,
+			"idempotency-key": randomUUID(),
+			origin,
+		},
+		body: "{}",
+	});
+
+	if (runNow.status !== 202)
+		throw new Error(
+			`reconcile run returned ${runNow.status}: ${await runNow.text()}`,
+		);
+
 	try {
 		await until(
 			async () => {
@@ -826,12 +856,15 @@ try {
 			).rows[0]?.count,
 		);
 
+		// Changes apply at once: creation, then the reported done.
+		const expectedRevisions = ontology ? 2 : 1;
+
 		if (
 			afterRestart !== beforeRestart ||
-			acceptedRevisions !== (ontology ? 2 : 1)
+			acceptedRevisions !== expectedRevisions
 		) {
 			throw new Error(
-				"restart repeated the observation workflow or changed accepted state",
+				`restart repeated the observation workflow or changed accepted state: calls ${beforeRestart}->${afterRestart}, revisions ${acceptedRevisions}`,
 			);
 		}
 
@@ -841,7 +874,9 @@ try {
 		);
 
 		if (!task || task.status !== "done")
-			throw new Error("Agent task write was not accepted");
+			throw new Error(
+				`Agent task was not applied as done: ${JSON.stringify(task && { status: task.status, standing: task.standing })}`,
+			);
 
 		const revisions = await store.listTaskRevisions(task.id);
 
@@ -961,11 +996,14 @@ try {
 				(item) => item.id === task.id,
 			);
 
+			// The chat report never completed the task, so no old completion can be reused.
 			if (
-				reviewedTask.status !== "in_progress" ||
-				reviewedTask.result !== "unknown"
+				reviewedTask.status === "done" ||
+				(reviewedTask.result ?? "unknown") !== "unknown"
 			)
-				throw new Error("New approved scope reused old completion");
+				throw new Error(
+					`New approved scope reused old completion: ${reviewedTask.status}/${reviewedTask.result}`,
+				);
 
 			const beforeGuard = (await store.listTasks()).find(
 				(item) => item.id === task.id,
@@ -1312,8 +1350,18 @@ try {
 			["pending", "escalated"].includes(proposal.state),
 		);
 
-		if (pending.length)
-			throw new Error("Agent writes require human approval");
+		// Only the changes the trust rules hold for a person may stay pending.
+		const unexpected = pending.filter(
+			(proposal) =>
+				proposal.requestedBy === "observation-agent" &&
+				!["done", "cancelled"].includes(proposal.changes?.status) &&
+				proposal.changes?.owner === undefined,
+		);
+
+		if (unexpected.length)
+			throw new Error(
+				`Agent writes left unexpected pending proposals: ${unexpected.map((proposal) => proposal.kind).join(", ")}`,
+			);
 
 		const splitCalls = Number(
 			(

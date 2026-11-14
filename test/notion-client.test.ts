@@ -7,7 +7,7 @@ import type {
 } from "../src/connectors/notion/types.js";
 import { ProposalPolicy } from "../src/domain/policy.js";
 import { TeamLedger } from "../src/domain/team-ledger.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { testStore } from "./helpers/test-store.js";
 
 function page(id: string): NotionPage {
 	return {
@@ -199,7 +199,7 @@ describe("NotionClient", () => {
 	});
 
 	it("projects successful and failed repair scans into installation health", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ledger = new TeamLedger(
 			store,
 			new ProposalPolicy({
@@ -368,7 +368,7 @@ describe("NotionClient", () => {
 			}
 			return new Response("not found", { status: 404 });
 		});
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ledger = new TeamLedger(
 			store,
 			new ProposalPolicy({

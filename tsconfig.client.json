@@ -1,0 +1,22 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "none",
+		"lib": ["ES2023", "DOM", "DOM.Iterable"],
+		"outFile": "dist/client/app.js",
+		"strict": false,
+		"noImplicitAny": false,
+		"skipLibCheck": true,
+		"removeComments": false,
+		"types": []
+	},
+	"files": [
+		"src/client/01-core.ts",
+		"src/client/02-home-agents.ts",
+		"src/client/03-work-review.ts",
+		"src/client/04-context.ts",
+		"src/client/05-agents-tasks.ts",
+		"src/client/06-load-navigation.ts",
+		"src/client/07-forms.ts"
+	]
+}

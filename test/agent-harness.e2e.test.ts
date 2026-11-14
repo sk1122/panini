@@ -4,10 +4,8 @@ import { chromium } from "playwright";
 import { loadConfig } from "../src/config.js";
 import { TeamLedger } from "../src/domain/team-ledger.js";
 import { ProposalPolicy } from "../src/domain/policy.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { testStore } from "./helpers/test-store.js";
 import { buildHttpServer } from "../src/http/server.js";
-import { EvidenceIntelligence } from "../src/intelligence/engine.js";
-import { AutonomousAdjudicator } from "../src/adjudication/engine.js";
 import { OutboxQueue } from "../src/outbox/runtime.js";
 import { ReplayVerifier } from "../src/replay/verifier.js";
 
@@ -25,37 +23,14 @@ it.runIf(process.env.PANINI_AGENT_BROWSER_TEST === "true")(
 			publicUrl: "http://127.0.0.1:4153",
 		});
 
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ledger = new TeamLedger(
 			store,
 			new ProposalPolicy(config.app.policy),
 		);
-		const log = { info() {}, error() {} };
-		const intelligence = new EvidenceIntelligence({
-			store,
-			ledger,
-			interpreter: null,
-			companyName: "Test",
-			config: config.app.intelligence,
-			log,
-		});
-		const adjudicator = new AutonomousAdjudicator({
-			store,
-			ledger,
-			provider: null,
-			companyName: "Test",
-			config: config.app.adjudication,
-			completionPolicy: {
-				minimumEvidenceItems: 2,
-				evidenceProviders: ["agent"],
-			},
-			log,
-		});
 		const app = await buildHttpServer({
 			config,
 			ledger,
-			intelligence,
-			adjudicator,
 			jobs: new OutboxQueue(store),
 			replay: new ReplayVerifier(store),
 		});

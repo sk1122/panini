@@ -211,7 +211,7 @@ describe("app shell", () => {
 		expect(sidebar).not.toContain('class="workspace-switcher"');
 		expect(topbar).toContain('class="workspace-switcher"');
 		expect(shell).not.toContain('id="freshness"');
-		expect(appScript).toContain("window.addEventListener('popstate'");
+		expect(appScript).toMatch(/window\.addEventListener\(["']popstate["']/);
 		expect(appScript).toContain("window.history.pushState");
 		expect(shell).toContain('id="nav-more"');
 		expect(shell).toContain('id="projects-index"');
@@ -225,7 +225,7 @@ describe("app shell", () => {
 		expect(shell).toContain('id="context-tree"');
 		expect(shell).toContain('data-context-mode="accepted"');
 		expect(shell).toContain('data-context-mode="sources"');
-		expect(shell).toContain('value="source:read" checked');
+		expect(shell).toContain('value="source:read">');
 		expect(shell).toContain("Original sources");
 		expect(shell).not.toContain('class="evidence-browser"');
 		expect(shell).not.toContain('id="audit-events"');
@@ -248,7 +248,12 @@ describe("app shell", () => {
 		expect(shell).not.toMatch(/\son[a-z]+=/i);
 		expect(shell + appScript).not.toMatch(/[—–]/);
 
-		const missingTargets = [...appScript.matchAll(/byId\('([^']+)'\)/g)]
+		const targets = [...appScript.matchAll(/byId\(["']([^"']+)["']\)/g)];
+
+		// The compiled script must still reference many fixed element ids.
+		expect(targets.length).toBeGreaterThan(50);
+
+		const missingTargets = targets
 			.map((match) => match[1])
 			.filter((id) => !shell.includes(`id="${id}"`));
 
@@ -280,8 +285,8 @@ describe("app shell", () => {
 			/\.project-task span\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere[^}]*white-space:\s*normal/s,
 		);
 		expect(appStyles).toContain("[hidden] { display: none !important; }");
-		expect(appScript).toContain("addEventListener('dragstart'");
-		expect(appScript).toContain("addEventListener('drop'");
+		expect(appScript).toMatch(/addEventListener\(["']dragstart["']/);
+		expect(appScript).toMatch(/addEventListener\(["']drop["']/);
 		expect(appScript).toContain("Moved on the task board from");
 		expect(appStyles).toContain("@media (max-width: 1180px)");
 		expect(appStyles).toContain(".context-tabs");

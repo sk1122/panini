@@ -7,10 +7,10 @@ import {
 	renderContextPackMarkdown,
 } from "../src/retrieval/context-compiler.js";
 import type { SourceDocumentReader } from "../src/retrieval/source-document-library.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { testStore } from "./helpers/test-store.js";
 
 async function sourceSummary(
-	store: MemoryLedgerStore,
+	store: Awaited<ReturnType<typeof testStore>>,
 	index: number,
 ): Promise<SourceDocumentSummary> {
 	const { event } = await store.appendSourceEvent({
@@ -59,7 +59,7 @@ async function sourceSummary(
 
 describe("agent context pack budget", () => {
 	it("prefers a concise accepted fact over an equally matching oversized file", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ledger = new TeamLedger(
 			store,
 			new ProposalPolicy({
@@ -103,7 +103,7 @@ describe("agent context pack budget", () => {
 	});
 
 	it("keeps accepted content, catalog pointers, and source pointers within 30k", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const sourceDocuments: SourceDocumentReader = {
 			async list() {
 				return Promise.all(
@@ -174,7 +174,7 @@ describe("agent context pack budget", () => {
 	});
 
 	it("does not present broad-query readiness as proof an unknown question is answered", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ledger = new TeamLedger(
 			store,
 			new ProposalPolicy({
@@ -211,7 +211,7 @@ describe("agent context pack budget", () => {
 	});
 
 	it("spends explicit-search budget on accepted detail before optional pointers", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const sourceDocuments: SourceDocumentReader = {
 			async list() {
 				return Promise.all(

@@ -14,7 +14,7 @@ export interface KeychainRunner {
 	(args: string[], standardInput?: string): Promise<{ stdout: string }>;
 }
 
-async function macOsSecurity(
+export async function macOsSecurity(
 	args: string[],
 	standardInput?: string,
 ): Promise<{ stdout: string }> {

@@ -31,7 +31,7 @@ PANINI_GITHUB_BROWSER_TEST=true \
 pnpm exec vitest run --dir test --no-file-parallelism --testTimeout=60000 --reporter=json --outputFile=.panini/verification/tests.json
 ```
 
-The latest complete local run passed 299 tests with zero failures and zero skips. It includes PostgreSQL storage, HTTP and MCP access, history, projection rebuild, connector fixtures, agent enrollment, and GitHub login with a local authorization fixture. No real GitHub OAuth account or live provider integration is implied by the fixture result.
+The latest local run (2026-11-14) passed 206 tests with zero failures; the 2 browser tests were skipped because Chromium was not installed. It includes PostgreSQL storage, HTTP and MCP access, history, projection rebuild, connector fixtures, agent enrollment, and GitHub login with a local authorization fixture. No real GitHub OAuth account or live provider integration is implied by the fixture result.
 
 The repository workflow repeats these checks on Linux. A local pass is not proof that a remote CI job passed; inspect the workflow result for the exact commit.
 

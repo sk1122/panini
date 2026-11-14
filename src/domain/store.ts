@@ -89,6 +89,12 @@ export interface RebuildCurrentProjectionsInput {
 }
 
 export interface LedgerStore extends EvidenceStore {
+	/** Sessions, claims, activity, handoffs and team notes. */
+	readonly agentLedger: import("./agent-ledger.js").AgentLedgerStore;
+	/** Scheduled reconcile runs; PostgreSQL only. */
+	readonly reconcileRuns?: import("../reconcile/runner.js").PostgresReconcileRuns;
+	/** MCP OAuth clients and refresh tokens; PostgreSQL only. */
+	readonly oauth?: import("../security/oauth.js").PostgresOAuthStore;
 	ensureWorkScope?(
 		input: import("./work-state.js").WorkScopeCommand,
 	): Promise<import("./work-state.js").WorkScope>;

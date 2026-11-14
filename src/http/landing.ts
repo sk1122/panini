@@ -22,13 +22,13 @@ export function renderLandingPage(nonce: string): string {
   <meta name="description" content="Panini gives people and agents a shared structure for tasks, context, evidence, permissions, and proposals.">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Panini | The grammar of work.">
-  <meta property="og:description" content="A common language for people and agents.">
+  <meta property="og:description" content="Open-source memory and work ledger for your team's agents.">
   <meta property="og:url" content="https://panini.work/">
   <meta property="og:image" content="https://panini.work/assets/landing/grammar-machine.webp">
   <meta name="twitter:card" content="summary_large_image">
   <link rel="canonical" href="https://panini.work/">
   <link rel="icon" href="/assets/panini-mark.svg?v=pa" type="image/svg+xml">
-  <title>Panini | The grammar of work.</title>
+  <title>Panini | Memory for your agents</title>
   <link rel="stylesheet" href="/assets/phosphor.css" nonce="${safeNonce}">
   <style nonce="${safeNonce}">${landingStyles}</style>
 </head>
@@ -53,12 +53,14 @@ export function renderLandingPage(nonce: string): string {
   <main id="main">
     <section class="hero">
       <div class="hero-copy" data-reveal>
-        <p class="eyebrow"><span></span>A common language for people and agents</p>
-        <h1>The grammar<br><em>of work.</em></h1>
-        <p class="hero-deck">Give people and agents one legible system for tasks, context, evidence, permissions, and proposals.</p>
+        <p class="eyebrow"><span></span>Open source · self-hosted · MIT</p>
+        <h1>Memory for<br><em>your agents.</em></h1>
+        <p class="hero-deck">One place where your team's agents share company context, claim tasks, hand off work, and prove what is done. Works with Claude Code, Codex, Hermes, Pi and any MCP client. Reads Slack and GitHub.</p>
+        <pre class="hero-install"><code>npx panini-work</code></pre>
+        <p class="hero-install-note">Starts a demo company on your machine. No Docker, no API key. Then <code>npx panini-work connect</code> in your repository.</p>
         <div class="hero-actions">
           <a class="button button-primary" href="/app">Open Panini <i class="ph ph-arrow-right" aria-hidden="true"></i></a>
-          <a class="text-link" href="#system">Read the system <i class="ph ph-arrow-down" aria-hidden="true"></i></a>
+          <a class="text-link" href="https://github.com/sk1122/panini">GitHub <i class="ph ph-arrow-up-right" aria-hidden="true"></i></a>
         </div>
       </div>
 

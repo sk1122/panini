@@ -38,14 +38,15 @@ export function renderAppShell(
       </a>
 
       <nav class="side-nav" aria-label="Workspace views">
-        <a class="nav-item active" href="/app/projects" data-view="projects"><i class="ph ph-folder-simple" aria-hidden="true"></i><b>Projects</b><em id="project-count" hidden>0</em></a>
+        <a class="nav-item active" href="/app/home" data-view="home"><i class="ph ph-house" aria-hidden="true"></i><b>Home</b><em id="home-count" hidden>0</em></a>
+        <a class="nav-item" href="/app/projects" data-view="projects"><i class="ph ph-folder-simple" aria-hidden="true"></i><b>Projects</b><em id="project-count" hidden>0</em></a>
         <a class="nav-item" href="/app/tasks" data-view="work"><i class="ph ph-check-square" aria-hidden="true"></i><b>Tasks</b><em id="work-count" hidden>0</em></a>
         <a class="nav-item" href="/app/context" data-view="context"><i class="ph ph-books" aria-hidden="true"></i><b>Context</b><em id="context-count" hidden>0</em></a>
         <a class="nav-item" href="/app/people" data-view="people"><i class="ph ph-users-three" aria-hidden="true"></i><b>People</b><em id="people-count" hidden>0</em></a>
+        <a class="nav-item" id="review-nav" href="/app/review" data-view="review"><i class="ph ph-warning-circle" aria-hidden="true"></i><b>Changes</b><em id="review-count" hidden>0</em></a>
         <a class="nav-item" href="/app/timeline" data-view="timeline"><i class="ph ph-clock-counter-clockwise" aria-hidden="true"></i><b>Timeline</b></a>
         <div hidden>
           <em id="company-count">0</em><em id="history-count">0</em><details id="nav-more"></details>
-          <a class="nav-item" id="review-nav" href="/app/review" data-view="review" hidden><i class="ph ph-warning-circle" aria-hidden="true"></i><b>Review</b><em id="review-count" hidden>0</em></a>
         </div>
       </nav>
       <nav class="side-tools" aria-label="Workspace setup">
@@ -58,7 +59,7 @@ export function renderAppShell(
 
     <div class="workspace">
       <header class="topbar">
-        <div class="crumb"><strong id="current-view-label">Projects</strong></div>
+        <div class="crumb"><strong id="current-view-label">Home</strong></div>
         <details class="workspace-menu agent-connect-menu" id="agent-connect-menu" hidden><summary class="button quiet small">Connect MCP</summary><div class="workspace-menu-items"><label for="connect-agent-profile">Agent</label><select id="connect-agent-profile" aria-label="Agent to connect"></select><div id="connect-harness-options"></div></div></details>
         <details class="workspace-menu" id="workspace-menu"><summary class="workspace-switcher">
           <span class="workspace-avatar" id="workspace-avatar">${safeCompany.slice(0, 1).toUpperCase()}</span>
@@ -131,22 +132,39 @@ export function renderAppShell(
 
         <section class="view" id="view-work">
           <div class="work-intro">
-            <div><span class="eyebrow"><i class="ph ph-square" aria-hidden="true"></i>Accepted work</span><h1>Tasks</h1><p>Current commitments, grouped by accepted status.</p></div>
+            <div><h1>Tasks</h1><p>Everything your team and its agents are working on. Drag a card to change its status.</p></div>
             <button class="button primary" id="new-task"><i class="ph ph-plus" aria-hidden="true"></i>Create task</button>
           </div>
           <div id="task-suggestions"></div>
-          <div class="board-guide"><span><i class="ph ph-arrows-out-cardinal" aria-hidden="true"></i>Drag tasks between columns to update status.</span><span class="sr-only" id="board-status" aria-live="polite"></span></div>
+          <div class="board-guide"><span class="sr-only" id="board-status" aria-live="polite"></span></div>
           <div class="board loading" id="board" aria-live="polite">
             <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
           </div>
         </section>
 
-        <section class="view active" id="view-projects">
+        <section class="view" id="view-connect">
+          <div class="page-head"><div><h1>Connect an agent</h1><p>A <code>panini connect</code> command is asking to connect an agent as you.</p></div></div>
+          <div class="company-list connect-card" id="connect-card"><div class="empty"><strong>Loading request</strong></div></div>
+        </section>
+
+        <section class="view active" id="view-home">
+          <div class="page-head"><div><h1>Today</h1><p>What needs you, who is working on what now, and what changed.</p></div><span class="big-count" id="home-freshness">Loading</span></div>
+          <div class="company-columns">
+            <section><div class="section-head"><div><h2>Needs you</h2><p>Notes from agents, and changes that could not apply.</p></div><button class="button quiet small" type="button" id="home-accept-all" hidden>Accept all observed</button></div><div class="company-list" id="home-needs"></div></section>
+            <section><div class="section-head"><div><h2>Working now</h2><p>Agents holding a claim on a task.</p></div><button class="button quiet small" type="button" data-go-view="agents">See agents</button></div><div class="company-list" id="home-working"></div></section>
+          </div>
+          <div class="section-head"><div><h2>Changed recently</h2><p>Accepted updates to work and company knowledge.</p></div><button class="button quiet small" type="button" data-go-view="history">See history</button></div>
+          <div class="company-list" id="home-changed"></div>
+          <div class="home-sources" id="home-sources" aria-live="polite"></div>
+          <div class="home-sources" id="home-reconcile"></div>
+        </section>
+
+        <section class="view" id="view-projects">
           <header class="projects-hero">
-            <div><h1>Projects</h1><p>Durable outcomes and the accepted work connected to them.</p></div>
+            <div><h1>Projects</h1><p>What the company is trying to achieve, and the tasks under each goal.</p></div>
             <button class="button primary" id="new-project"><i class="ph ph-plus" aria-hidden="true"></i>Create project</button>
           </header>
-          <div class="projects-summary"><span><b id="project-metric">0 projects</b></span><i class="ph ph-arrow-right" aria-hidden="true"></i><span><b id="accepted-task-metric">0</b> accepted tasks</span><i class="ph ph-arrow-right" aria-hidden="true"></i><button type="button" data-go-view="review"><b id="decision-metric">0</b> changes need a decision</button></div>
+          <div class="projects-summary"><span><b id="project-metric">0 projects</b></span><i class="ph ph-arrow-right" aria-hidden="true"></i><span><b id="accepted-task-metric">0</b> tasks</span><i class="ph ph-arrow-right" aria-hidden="true"></i><button type="button" data-go-view="review"><b id="decision-metric">0</b> changes could not apply</button></div>
           <div id="project-suggestions"></div>
           <div class="projects-workspace" id="projects">
             <aside class="project-index"><header><h2>Projects</h2><span>Current</span></header><div id="projects-index"></div></aside>
@@ -156,16 +174,10 @@ export function renderAppShell(
         </section>
 
         <section class="view" id="view-review">
-          <div class="page-head"><div><h1>Review</h1><p>Decide proposed changes after checking their source evidence.</p></div><span class="big-count" id="proposal-metric">0 proposals</span></div>
+          <div class="page-head"><div><h1>Changes</h1><p>Agents and the nightly run change tasks and context right away. If something is wrong, undo it here.</p></div><span class="big-count" id="proposal-metric">0 changes</span></div>
           <div class="review-layout">
-            <div class="proposal-list" id="proposals"></div>
-            <aside class="decision-card">
-              <div id="evidence-coverage" hidden></div>
-              <h2>Why review matters</h2>
-              <div class="decision-rule"><i class="ph ph-arrows-left-right" aria-hidden="true"></i><div><strong>Credible conflict</strong><p>Current evidence supports mutually exclusive outcomes.</p></div></div>
-              <div class="decision-rule"><i class="ph ph-warning" aria-hidden="true"></i><div><strong>Sensitive ambiguity</strong><p>A consequential change cannot be resolved safely from available history.</p></div></div>
-              <div class="decision-rule"><i class="ph ph-seal-check" aria-hidden="true"></i><div><strong>Audited resolution</strong><p>Your decision remains linked to evidence and revision history.</p></div></div>
-            </aside>
+            <div class="proposal-list"><div id="proposals"></div><div id="recent-changes"></div></div>
+            <details class="processing-details" data-admin-only><summary>Processing details</summary><div id="evidence-coverage" hidden></div></details>
           </div>
         </section>
 
@@ -195,27 +207,34 @@ export function renderAppShell(
 
         <section class="view" id="view-agents">
           <div class="agents-hero">
-            <div><h1>Agents</h1><p>Personal, scoped connections for Codex, Claude Code, Hermes, Pi, and other MCP clients.</p></div>
-            <button class="button primary" id="new-agent"><i class="ph ph-plus" aria-hidden="true"></i>Create agent</button>
+            <div><h1>Agents</h1><p>What each of your team's agents is doing, what it did last, and what it costs.</p></div>
+            <button class="button primary" id="connect-agent-open"><i class="ph ph-plus" aria-hidden="true"></i>Connect an agent</button>
           </div>
-          <div class="agent-boundary"><i class="ph ph-shield-check" aria-hidden="true"></i><div><strong>Scoped by profile</strong><span>Secrets appear once. Company changes become proposals or evidence; private notes stay with the agent.</span></div></div>
-          <div class="section-head"><div><h2>Workspace profiles</h2><p>Each connection can be traced, rotated, and revoked independently.</p></div><span class="mono" id="agent-metric">0 profiles</span></div>
-          <div class="agent-grid" id="agents"></div>
-          <div class="section-head"><div><h2>Enrolled devices</h2><p>Relay credentials are independently revocable and expose no transcripts by default.</p></div><button class="button quiet" id="new-device"><i class="ph ph-laptop" aria-hidden="true"></i>Enroll device</button></div>
-          <div class="activity-list" id="devices"></div>
-          <div class="section-head"><div><h2>Repository mapping</h2><p>Map a repository to its project and approved context paths.</p></div><button class="button quiet" id="new-mapping"><i class="ph ph-git-branch" aria-hidden="true"></i>Add mapping</button></div>
-          <div class="activity-list" id="repository-mappings"></div>
+          <div class="agent-board" id="agents"></div>
+          <details class="agents-advanced">
+            <summary>Advanced: manual setup, relay devices and repository mappings</summary>
+            <div class="section-head"><div><h2>Manual setup</h2><p>Create an agent profile yourself and copy its one-time secret into any MCP client.</p></div><button class="button quiet" id="new-agent"><i class="ph ph-plus" aria-hidden="true"></i>Create agent</button></div>
+            <div class="section-head"><div><h2>Relay devices</h2><p>Machines that queue agent reports while offline.</p></div><button class="button quiet" id="new-device"><i class="ph ph-laptop" aria-hidden="true"></i>Enroll device</button></div>
+            <div class="activity-list" id="devices"></div>
+            <div class="section-head"><div><h2>Repository mappings</h2><p>Which project an agent works on in each repository.</p></div><button class="button quiet" id="new-mapping"><i class="ph ph-git-branch" aria-hidden="true"></i>Add mapping</button></div>
+            <div class="activity-list" id="repository-mappings"></div>
+          </details>
         </section>
 
         <section class="view" id="view-integrations">
           <div class="agents-hero"><div><h1>Integrations</h1><p>Manage where company information comes from.</p></div><div class="top-actions"><button class="button quiet" id="analyze" hidden><i class="ph ph-magic-wand" aria-hidden="true"></i>Analyze evidence</button><button class="button quiet" id="sync"><i class="ph ph-arrows-clockwise" aria-hidden="true"></i>Sync sources</button><button class="button primary" id="connect-github"><i class="ph ph-github-logo" aria-hidden="true"></i>Connect GitHub</button><button class="button quiet" id="new-integration"><i class="ph ph-plus" aria-hidden="true"></i>Add integration</button></div></div>
-          <div class="agent-boundary"><i class="ph ph-lock-key" aria-hidden="true"></i><div><strong>Credentials stay outside normal reads</strong><span>Slack captures require a designated reaction. GitHub and Notion are restricted to selected resources.</span></div></div>
           <div class="integration-grid" id="integrations"></div>
         </section>
       </main>
     </div>
   </div>
 
+  <dialog id="connect-agent-dialog"><div class="modal"><div class="modal-cap"><span class="modal-label">Connect an agent</span><button type="button" class="icon-button" data-close="connect-agent-dialog" aria-label="Close"><i class="ph ph-x" aria-hidden="true"></i></button></div>
+    <h2>Run this in the repository your agent works in</h2>
+    <div class="connect-command"><code>npx panini-work connect</code><button class="button quiet small" type="button" id="connect-command-copy">Copy</button></div>
+    <ol class="connect-steps"><li>It opens this page and shows a short code. Check it matches your terminal, then approve.</li><li>It saves the agent's key in your keychain and sets up Claude Code for you. For other agents it prints one setup line.</li><li>Start a new agent session. It appears here within a minute.</li></ol>
+    <p class="connect-alt">Using another MCP client? <button class="text-button" type="button" id="connect-manual">Set it up manually</button></p>
+  </div></dialog>
   <dialog id="session-dialog"><form class="modal session-modal" id="session-form"><div class="modal-cap"><span class="modal-label">Local administrator</span></div><h2>Unlock this workspace</h2><p>Enter the private administrator token created by <code>panini-setup init</code>. It is exchanged for an eight-hour protected session and is never stored in the browser.</p><div class="field"><label for="session-token">Administrator token</label><input id="session-token" name="token" type="password" required autocomplete="current-password" spellcheck="false"></div><p class="form-error" id="session-error" role="alert" hidden></p><div class="modal-actions"><button class="button primary" type="submit"><i class="ph ph-lock-key" aria-hidden="true"></i>Unlock workspace</button></div></form></dialog>
 
   <dialog id="workspace-files-dialog"><div class="modal"><div class="modal-cap"><span class="modal-label">Personal workspace</span><button type="button" class="icon-button" data-close="workspace-files-dialog" aria-label="Close"><i class="ph ph-x" aria-hidden="true"></i></button></div><h2 id="workspace-files-title">Workspace files</h2><p>Working notes saved by your agents. These are separate from accepted company context.</p><div class="field"><label for="workspace-files-scope">Workspace</label><select id="workspace-files-scope"><option value="agent">Agent : private to this profile</option><option value="user">User : shared across your agents</option></select></div><div id="workspace-files-list"></div><h3 id="workspace-file-title"></h3><pre id="workspace-file-content" class="workspace-file-content"></pre></div></dialog>
@@ -275,7 +294,7 @@ export function renderAppShell(
       <label><input type="checkbox" name="capability" value="work:read" checked><span><b>Read work</b><small>Search accepted tasks and proposal status.</small></span></label>
       <label><input type="checkbox" name="capability" value="work:propose" checked><span><b>Propose work</b><small>Suggest new tasks and task changes.</small></span></label>
       <label><input type="checkbox" name="capability" value="context:read" checked><span><b>Read context</b><small>Open the context tree, facts, and files.</small></span></label>
-      <label><input type="checkbox" name="capability" value="source:read" checked><span><b>Read source material</b><small>Discover and open cited source documents or sections on demand.</small></span></label>
+      <label><input type="checkbox" name="capability" value="source:read"><span><b>Read source material</b><small>Discover and open cited source documents or sections on demand.</small></span></label>
       <label><input type="checkbox" name="capability" value="context:propose" checked><span><b>Propose context</b><small>Suggest evidence-backed facts and files.</small></span></label>
       <label><input type="checkbox" name="capability" value="evidence:report" checked><span><b>Report evidence</b><small>Record privacy-filtered work receipts.</small></span></label>
       <label><input type="checkbox" name="capability" value="workspace:read" checked><span><b>Read own notes</b><small>Open this agent's persistent private files.</small></span></label>

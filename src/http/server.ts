@@ -1,11 +1,16 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+	createHash,
+	createHmac,
+	randomBytes,
+	randomUUID,
+	timingSafeEqual,
+} from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z, ZodError } from "zod";
 import { evidencePipelineMode, type RuntimeConfig } from "../config.js";
-import type { AutonomousAdjudicator } from "../adjudication/engine.js";
 import {
 	GithubWebhookAdapter,
 	verifyGithubSignature,
@@ -31,18 +36,23 @@ import {
 	type NewSourceInstallation,
 	type ProposalChanges,
 	type ProjectChanges,
+	type SourceEventInput,
 	type SourceInstallationUpdate,
 } from "../domain/types.js";
-import type { EvidenceIntelligence } from "../intelligence/engine.js";
 import type { OutboxQueue } from "../outbox/runtime.js";
 import type { ReplayVerifier } from "../replay/verifier.js";
 import { createTeamLedgerMcp } from "../mcp/server.js";
+import { usageFromLogs } from "../telemetry/otlp.js";
+import {
+	ACCESS_TOKEN_TTL_SECONDS,
+	AccessTokenSigner,
+	validRedirectUri,
+	verifyPkce,
+} from "../security/oauth.js";
 import { runWithMcpPrincipal, type McpPrincipal } from "../mcp/principal.js";
 import { relayEnvelopeSchema, verifyRelayEnvelope } from "../relay/protocol.js";
 import { renderLandingPage } from "./landing.js";
 import { renderAppShell } from "./ui.js";
-import { JevWorkJudge } from "../reconciliation/jev-work-judge.js";
-import { OpenAIWorkProseDrafter } from "../reconciliation/openai-work-drafter.js";
 import {
 	AuthError,
 	IdentityService,
@@ -196,12 +206,6 @@ const evidenceEventSchema = z
 	})
 	.strict();
 
-const intelligenceRunRequestSchema = z
-	.object({
-		eventIds: z.array(z.string().uuid()).max(20).default([]),
-	})
-	.strict();
-
 const agentDataScopeSchema = z
 	.object({
 		projects: z
@@ -274,6 +278,16 @@ const sourceInstallationUpdateSchema = z
 	})
 	.strict();
 
+const connectStartSchema = z.object({
+	harness: z.enum(agentHarnesses).default("generic_mcp"),
+	repository: z
+		.string()
+		.trim()
+		.regex(/^[^/\s]+\/[^/\s]+$/)
+		.optional(),
+	hostname: z.string().trim().min(1).max(120).optional(),
+});
+
 const deviceEnrollmentSchema = z
 	.object({
 		agentProfileId: z.string().uuid(),
@@ -304,6 +318,15 @@ function bearerToken(request: FastifyRequest): string | null {
 
 	if (!authorization?.startsWith("Bearer ")) return null;
 	return authorization.slice(7);
+}
+
+function headerText(
+	value: string | string[] | undefined,
+	max: number,
+): string | null {
+	const text = (Array.isArray(value) ? value[0] : value)?.trim();
+
+	return text && !/[\u0000-\u001f]/.test(text) ? text.slice(0, max) : null;
 }
 
 function tokensMatch(provided: string | null, expected: string): boolean {
@@ -382,15 +405,10 @@ function readAdminSession(
 export interface HttpServerOptions {
 	ledger: TeamLedger;
 	config: RuntimeConfig;
-	intelligence: EvidenceIntelligence;
-	adjudicator: AutonomousAdjudicator;
 	jobs: OutboxQueue;
 	replay: ReplayVerifier;
 	githubAppClient?: GithubAppClient;
 	identity?: IdentityService;
-	proposalClassifier?:
-		| import("../adjudication/proposal-fit-classifier.js").ProposalFitClassifier
-		| null;
 }
 
 export async function buildHttpServer(options: HttpServerOptions) {
@@ -420,6 +438,13 @@ export async function buildHttpServer(options: HttpServerOptions) {
 		connectionTimeout: 15_000,
 	});
 
+	// OAuth token requests are form-encoded.
+	app.addContentTypeParser(
+		"application/x-www-form-urlencoded",
+		{ parseAs: "string" },
+		(_request, body, done) =>
+			done(null, Object.fromEntries(new URLSearchParams(String(body)))),
+	);
 	app.removeContentTypeParser("application/json");
 	app.addContentTypeParser(
 		"application/json",
@@ -440,8 +465,6 @@ export async function buildHttpServer(options: HttpServerOptions) {
 	const mcp = createTeamLedgerMcp(
 		options.ledger,
 		options.config.app.company.name,
-		options.intelligence,
-		options.proposalClassifier,
 	);
 	const mcpNodeHandler = toNodeHandler(mcp, {
 		onerror: (error) => app.log.error(error),
@@ -476,6 +499,10 @@ export async function buildHttpServer(options: HttpServerOptions) {
 			})
 		: null;
 
+	const recorder = {
+		record: (input: SourceEventInput) => options.ledger.recordSource(input),
+	};
+
 	const access = (request: FastifyRequest): AccessScope =>
 		identity?.access(request) ?? { kind: "admin" };
 
@@ -507,7 +534,7 @@ export async function buildHttpServer(options: HttpServerOptions) {
 						installationKey: githubConfig.installationKey,
 						repositories: githubConfig.repositories,
 					},
-					options.intelligence,
+					recorder,
 					options.ledger,
 				)
 			: null;
@@ -576,7 +603,11 @@ export async function buildHttpServer(options: HttpServerOptions) {
 		if (request.url.startsWith("/api/session")) return;
 		if (
 			request.url.startsWith("/api/webhooks/github") ||
-			request.url.startsWith("/api/relay/work-reports")
+			request.url.startsWith("/api/relay/work-reports") ||
+			request.url.startsWith("/api/agent/hooks") ||
+			request.url.startsWith("/api/agent/otlp/") ||
+			request.url.startsWith("/api/connect/start") ||
+			request.url.startsWith("/api/connect/poll")
 		)
 			return;
 		if (!request.url.startsWith("/api/")) return;
@@ -650,6 +681,8 @@ export async function buildHttpServer(options: HttpServerOptions) {
 		"/app/:page",
 		async (request, reply) => {
 			z.enum([
+				"home",
+				"connect",
 				"projects",
 				"tasks",
 				"context",
@@ -802,11 +835,8 @@ export async function buildHttpServer(options: HttpServerOptions) {
 		service: "panini",
 		storage: options.config.databaseUrl ? "postgres" : "memory",
 		notion: options.config.app.notion.enabled ? "worker" : "disabled",
-		intelligence: options.intelligence.isConfigured()
-			? options.config.app.intelligence.mode
-			: "disabled",
-		adjudication: options.adjudicator.isConfigured()
-			? options.config.app.adjudication.mode
+		intelligence: options.config.app.intelligence.enabled
+			? "observation-agent"
 			: "disabled",
 		retrieval: {
 			provider:
@@ -1275,6 +1305,185 @@ export async function buildHttpServer(options: HttpServerOptions) {
 
 		return { agents: await options.ledger.listAgentProfiles(memberId) };
 	});
+	app.get("/api/agents/overview", async (request) => {
+		const query = z
+			.object({ since: z.iso.datetime().optional() })
+			.parse(request.query);
+
+		return options.ledger.agentOverview(access(request), {
+			...(query.since ? { since: query.since } : {}),
+		});
+	});
+	app.get("/api/agents/summary", async (request) =>
+		options.ledger.agentSummaries(access(request)),
+	);
+	app.get<{ Params: { sessionId: string } }>(
+		"/api/agents/sessions/:sessionId/story",
+		async (request) =>
+			options.ledger.sessionStory(
+				request.params.sessionId,
+				access(request),
+			),
+	);
+	app.get("/api/agents/activity", async (request) => {
+		const query = z
+			.object({
+				sessionId: z.uuid().optional(),
+				agentProfileId: z.uuid().optional(),
+				limit: z.coerce.number().int().min(1).max(500).optional(),
+			})
+			.parse(request.query);
+
+		return {
+			events: await options.ledger.agentActivity(access(request), {
+				...(query.sessionId ? { sessionId: query.sessionId } : {}),
+				...(query.agentProfileId
+					? { agentProfileId: query.agentProfileId }
+					: {}),
+				...(query.limit ? { limit: query.limit } : {}),
+			}),
+		};
+	});
+	app.post<{ Params: { sessionId: string } }>(
+		"/api/agents/sessions/:sessionId/rollback",
+		async (request) =>
+			options.ledger.rollbackSession(
+				request.params.sessionId,
+				access(request),
+				requestActor(request),
+			),
+	);
+
+	// Reconcile needs a worker with a model key; without one, say so instead of queueing work no one runs.
+	const reconcileEnabled =
+		options.config.app.intelligence.enabled &&
+		Boolean(options.config.intelligenceApiKey);
+
+	app.get("/api/reconcile/runs", async () => ({
+		enabled: reconcileEnabled,
+		runs: (await options.ledger.listReconcileRuns(10)).map(
+			({ digest: _digest, ...run }) => run,
+		),
+		mode:
+			process.env.PANINI_RECONCILE_MODE === "live" ? "live" : "scheduled",
+		intervalHours: Number(
+			process.env.PANINI_RECONCILE_INTERVAL_HOURS ?? 24,
+		),
+	}));
+	app.post("/api/reconcile/run", async (request, reply) => {
+		if (!reconcileEnabled)
+			return reply.code(409).send({
+				error: "Model processing is off. Set a model key and enable intelligence to run reconcile.",
+			});
+		if (identity && !isAdministrator(identity.member(request)))
+			throw new DomainError(
+				"Only an owner or admin can start a reconcile run.",
+				"FORBIDDEN",
+			);
+
+		const job = await options.jobs.enqueue(
+			"reconcile.run",
+			`reconcile:manual:${idempotencyKey(request)}`,
+			{ trigger: "manual", requestedBy: requestActor(request) },
+		);
+
+		return reply.code(202).send({ state: "queued", jobId: job.id });
+	});
+	app.get("/api/digest", async (request) => {
+		const query = z
+			.object({ since: z.iso.datetime().optional() })
+			.parse(request.query);
+
+		return options.ledger.digest(access(request), {
+			...(query.since ? { since: query.since } : {}),
+		});
+	});
+	app.get("/api/home", async (request) =>
+		options.ledger.homeProjection(access(request)),
+	);
+	app.get("/api/notes", async (request) => {
+		const query = z
+			.object({
+				state: z.enum(["open", "promoted", "dismissed"]).optional(),
+			})
+			.parse(request.query);
+
+		return {
+			notes: await options.ledger.visibleNotes(access(request), {
+				...(query.state ? { state: query.state } : {}),
+			}),
+		};
+	});
+	app.post<{ Params: { noteId: string } }>(
+		"/api/notes/:noteId/state",
+		async (request) => {
+			const body = z
+				.object({ state: z.enum(["promoted", "dismissed", "open"]) })
+				.parse(request.body);
+			const visible = await options.ledger.visibleNotes(access(request), {
+				limit: 500,
+			});
+
+			if (!visible.some((note) => note.id === request.params.noteId))
+				throw new DomainError("Note not found.", "NOT_FOUND");
+			return {
+				note: await options.ledger.setNoteState(
+					request.params.noteId,
+					body.state,
+					requestActor(request),
+				),
+			};
+		},
+	);
+	app.post("/api/tasks/confirm", async (request) => {
+		const body = z
+			.object({
+				taskIds: z.array(z.uuid()).min(1).max(100),
+				decision: z.enum(["accept", "dismiss"]).default("accept"),
+			})
+			.parse(request.body);
+
+		return {
+			tasks: await options.ledger.confirmObservedTasks(
+				body.taskIds,
+				body.decision,
+				access(request),
+				requestActor(request),
+			),
+		};
+	});
+	app.post<{ Params: { taskId: string } }>(
+		"/api/tasks/:taskId/claims/clear",
+		async (request) => {
+			const task = await options.ledger.getTaskForAccess(
+				request.params.taskId,
+				access(request),
+			);
+
+			if (!task) throw new DomainError("Task not found.", "NOT_FOUND");
+			return {
+				cleared: await options.ledger.clearTaskClaims(
+					task.id,
+					requestActor(request),
+				),
+			};
+		},
+	);
+	app.get<{ Params: { taskId: string } }>(
+		"/api/tasks/:taskId/ledger",
+		async (request) => {
+			const task = await options.ledger.getTaskForAccess(
+				request.params.taskId,
+				access(request),
+			);
+
+			if (!task) throw new DomainError("Task not found.", "NOT_FOUND");
+			return {
+				claims: await options.ledger.activeClaimsForTasks([task.id]),
+				handoffs: await options.ledger.agents.listHandoffs(task.id, 10),
+			};
+		},
+	);
 	app.get("/api/devices", async (request) => {
 		const query = z
 			.object({ agentProfileId: z.string().uuid().optional() })
@@ -1570,6 +1779,38 @@ export async function buildHttpServer(options: HttpServerOptions) {
 		return reply.code(201).send({ entry });
 	});
 	app.post<{ Params: { entryId: string } }>(
+		"/api/context/entries/:entryId/corrections",
+		async (request, reply) => {
+			const body = z
+				.object({
+					correction: z.string().trim().min(1).max(20_000),
+					reason: z.string().trim().max(2_000).default(""),
+				})
+				.parse(request.body);
+			const proposal = await options.ledger.proposeContextCorrection({
+				entryId: request.params.entryId,
+				correction: body.correction,
+				reason: body.reason,
+				actor: requestActor(request),
+				access: access(request),
+				clientEventId: idempotencyKey(request),
+			});
+
+			// A member's correction applies at once; it can be undone.
+			if (proposal.state === "pending")
+				await options.ledger.approveProposal(
+					proposal.id,
+					requestActor(request),
+					"Corrected in Panini.",
+				);
+
+			return reply.code(201).send({
+				proposal:
+					(await options.ledger.getProposal(proposal.id)) ?? proposal,
+			});
+		},
+	);
+	app.post<{ Params: { entryId: string } }>(
 		"/api/context/entries/:entryId/lifecycle",
 		async (request) => {
 			const input = z
@@ -1613,10 +1854,6 @@ export async function buildHttpServer(options: HttpServerOptions) {
 			access(request),
 		),
 	}));
-	app.get("/api/intelligence/runs", async () => ({
-		runs: await options.intelligence.listRuns(),
-	}));
-
 	app.get<{ Params: { assessmentId: string } }>(
 		"/api/evidence/assessments/:assessmentId",
 		async (request) => ({
@@ -1731,7 +1968,7 @@ export async function buildHttpServer(options: HttpServerOptions) {
 
 	app.post("/api/evidence/events", async (request, reply) => {
 		const body = evidenceEventSchema.parse(request.body);
-		const result = await options.intelligence.record({
+		const result = await options.ledger.recordSource({
 			...body,
 			fetchedAt: body.fetchedAt ?? new Date().toISOString(),
 			payload: body.payload as JsonValue,
@@ -1814,7 +2051,7 @@ export async function buildHttpServer(options: HttpServerOptions) {
 								)
 							: [],
 					},
-					options.intelligence,
+					recorder,
 					options.ledger,
 				);
 			}
@@ -1830,6 +2067,629 @@ export async function buildHttpServer(options: HttpServerOptions) {
 			}
 			throw error;
 		}
+	});
+
+	/*
+	 * `panini connect`: the CLI opens a short-lived request, a signed-in member
+	 * approves it in the browser, and the CLI collects the new secret once.
+	 */
+	const connectRequests = new Map<
+		string,
+		{
+			code: string;
+			pollHash: string;
+			harness: z.infer<typeof connectStartSchema>["harness"];
+			repository: string | null;
+			hostname: string | null;
+			createdAt: number;
+			state: "pending" | "approved" | "denied";
+			secret: string | null;
+			profileId: string | null;
+			profileName: string | null;
+			/** Set when the request came from an MCP OAuth authorize call. */
+			oauth?: {
+				clientId: string;
+				redirectUri: string;
+				codeChallenge: string;
+				state: string | null;
+			};
+		}
+	>();
+	const connectTtlMs = 10 * 60_000;
+	const oauthResource = `${setupBaseUrl}/mcp`;
+	const oauthSigner =
+		options.ledger.oauth && options.config.contentEncryptionKey
+			? new AccessTokenSigner(options.config.contentEncryptionKey)
+			: null;
+	const oauthCodes = new Map<
+		string,
+		{
+			clientId: string;
+			redirectUri: string;
+			codeChallenge: string;
+			agentProfileId: string;
+			expiresAt: number;
+		}
+	>();
+
+	const redirectWith = (
+		uri: string,
+		params: Record<string, string | null>,
+	) => {
+		const url = new URL(uri);
+
+		for (const [key, value] of Object.entries(params))
+			if (value !== null) url.searchParams.set(key, value);
+		return url.toString();
+	};
+
+	const liveConnect = (id: string) => {
+		const item = connectRequests.get(id);
+
+		if (item && Date.now() - item.createdAt > connectTtlMs) {
+			connectRequests.delete(id);
+			return null;
+		}
+		return item ?? null;
+	};
+
+	app.post("/api/connect/start", async (request, reply) => {
+		const body = connectStartSchema.parse(request.body);
+
+		for (const [id] of connectRequests) liveConnect(id);
+		if (connectRequests.size >= 100)
+			return reply
+				.code(429)
+				.send({ error: "Too many pending connect requests." });
+
+		const id = randomUUID();
+		const pollToken = randomBytes(24).toString("base64url");
+		const code = randomBytes(3).toString("hex").toUpperCase();
+
+		connectRequests.set(id, {
+			code,
+			pollHash: createHash("sha256").update(pollToken).digest("hex"),
+			harness: body.harness,
+			repository: body.repository ?? null,
+			hostname: body.hostname ?? null,
+			createdAt: Date.now(),
+			state: "pending",
+			secret: null,
+			profileId: null,
+			profileName: null,
+		});
+		return reply.code(201).send({
+			requestId: id,
+			pollToken,
+			code,
+			approveUrl: `${setupBaseUrl}/app/connect?request=${id}`,
+			expiresInSeconds: connectTtlMs / 1000,
+		});
+	});
+	app.post("/api/connect/poll", async (request) => {
+		const body = z
+			.object({
+				requestId: z.uuid(),
+				pollToken: z.string().min(10).max(200),
+			})
+			.parse(request.body);
+		const item = liveConnect(body.requestId);
+
+		if (
+			!item ||
+			!tokensMatch(
+				createHash("sha256").update(body.pollToken).digest("hex"),
+				item.pollHash,
+			)
+		)
+			return { state: "expired" };
+		if (item.state !== "approved") return { state: item.state };
+
+		const secret = item.secret;
+
+		// The secret leaves the server exactly once.
+		connectRequests.delete(body.requestId);
+		return {
+			state: "approved",
+			secret,
+			profileId: item.profileId,
+			profileName: item.profileName,
+			mcpUrl: `${setupBaseUrl}/mcp`,
+		};
+	});
+	app.get<{ Params: { requestId: string } }>(
+		"/api/connect/requests/:requestId",
+		async (request) => {
+			const item = liveConnect(request.params.requestId);
+
+			if (!item)
+				throw new DomainError("Connect request expired.", "NOT_FOUND");
+			return {
+				code: item.code,
+				harness: item.harness,
+				repository: item.repository,
+				hostname: item.hostname,
+				state: item.state,
+			};
+		},
+	);
+	app.post<{ Params: { requestId: string } }>(
+		"/api/connect/requests/:requestId/decision",
+		async (request) => {
+			const item = liveConnect(request.params.requestId);
+
+			if (!item || item.state !== "pending")
+				throw new DomainError("Connect request expired.", "NOT_FOUND");
+
+			const body = z
+				.object({
+					decision: z.enum(["approve", "deny"]),
+					name: z.string().trim().min(1).max(120).optional(),
+					project: z.string().trim().min(1).max(240).optional(),
+				})
+				.parse(request.body);
+
+			if (body.decision === "deny") {
+				item.state = "denied";
+				return {
+					state: item.state,
+					...(item.oauth
+						? {
+								redirectTo: redirectWith(
+									item.oauth.redirectUri,
+									{
+										error: "access_denied",
+										state: item.oauth.state,
+									},
+								),
+							}
+						: {}),
+				};
+			}
+
+			const actor = requestActor(request);
+			const memberId = identity
+				? identity.member(request).id
+				: (await activeLocalAdmin())?.member.id;
+
+			if (!memberId)
+				throw new DomainError(
+					"No member can own this agent.",
+					"FORBIDDEN",
+				);
+
+			const mapping = item.repository
+				? (await options.ledger.listRepositoryMappings()).find(
+						(candidate) =>
+							candidate.repository.toLowerCase() ===
+							item.repository!.toLowerCase(),
+					)
+				: undefined;
+
+			if (item.repository && !mapping && body.project)
+				await options.ledger.configureRepositoryMapping(
+					{
+						repository: item.repository,
+						project: body.project,
+						contextPaths: [],
+					},
+					actor,
+				);
+
+			const name =
+				body.name ??
+				`${item.harness.replaceAll("_", " ")} on ${item.hostname ?? "this machine"}`;
+			const projects = [mapping?.project ?? body.project ?? "*"];
+			// Reconnecting an existing agent of yours gives it a new secret instead of failing.
+			const existing = (
+				await options.ledger.listAgentProfiles(memberId)
+			).find(
+				(profile) =>
+					profile.status === "active" &&
+					profile.name.toLocaleLowerCase("en") ===
+						name.toLocaleLowerCase("en"),
+			);
+
+			if (existing)
+				await options.ledger.updateAgentDataScope(
+					existing.id,
+					{ ...existing.dataScope, projects },
+					actor,
+				);
+
+			const enrollment = existing
+				? await options.ledger.rotateAgentSecret(existing.id, actor)
+				: await options.ledger.createAgentProfile(
+						{
+							memberId,
+							name,
+							harness: item.harness,
+							description: item.repository
+								? `Connected from ${item.repository} with panini connect.`
+								: "Connected with panini connect.",
+							// Spec 7.3: every grant except reading raw sources.
+							capabilities: [
+								"work:read",
+								"work:propose",
+								"context:read",
+								"context:propose",
+								"evidence:report",
+								"workspace:read",
+								"workspace:write",
+							],
+							dataScope: {
+								projects,
+								contextPaths: ["/"],
+								sourceVisibilities: ["company"],
+							},
+						},
+						actor,
+					);
+
+			item.state = "approved";
+			item.profileId = enrollment.profile.id;
+			item.profileName = enrollment.profile.name;
+			if (item.oauth) {
+				// OAuth clients never see the enrollment secret; they get a code.
+				const code = `pac_${randomBytes(24).toString("base64url")}`;
+
+				oauthCodes.set(code, {
+					clientId: item.oauth.clientId,
+					redirectUri: item.oauth.redirectUri,
+					codeChallenge: item.oauth.codeChallenge,
+					agentProfileId: enrollment.profile.id,
+					expiresAt: Date.now() + 60_000,
+				});
+				connectRequests.delete(request.params.requestId);
+				return {
+					state: item.state,
+					profile: enrollment.profile,
+					redirectTo: redirectWith(item.oauth.redirectUri, {
+						code,
+						state: item.oauth.state,
+					}),
+				};
+			}
+			item.secret = enrollment.secret;
+			return { state: item.state, profile: enrollment.profile };
+		},
+	);
+
+	// MCP OAuth 2.1 (spec 7.2): metadata, client registration, authorize, token.
+	if (oauthSigner) {
+		const protectedResource = {
+			resource: oauthResource,
+			authorization_servers: [setupBaseUrl],
+			bearer_methods_supported: ["header"],
+			scopes_supported: ["mcp"],
+		};
+
+		app.get(
+			"/.well-known/oauth-protected-resource",
+			async () => protectedResource,
+		);
+		app.get(
+			"/.well-known/oauth-protected-resource/mcp",
+			async () => protectedResource,
+		);
+		app.get("/.well-known/oauth-authorization-server", async () => ({
+			issuer: setupBaseUrl,
+			authorization_endpoint: `${setupBaseUrl}/oauth/authorize`,
+			token_endpoint: `${setupBaseUrl}/oauth/token`,
+			registration_endpoint: `${setupBaseUrl}/oauth/register`,
+			response_types_supported: ["code"],
+			grant_types_supported: ["authorization_code", "refresh_token"],
+			code_challenge_methods_supported: ["S256"],
+			token_endpoint_auth_methods_supported: ["none"],
+			scopes_supported: ["mcp"],
+		}));
+		app.post("/oauth/register", async (request, reply) => {
+			const body = z
+				.object({
+					client_name: z
+						.string()
+						.trim()
+						.min(1)
+						.max(120)
+						.default("MCP client"),
+					redirect_uris: z.array(z.string().max(500)).min(1).max(10),
+				})
+				.parse(request.body);
+
+			if (!body.redirect_uris.every(validRedirectUri))
+				return reply.code(400).send({
+					error: "invalid_redirect_uri",
+					error_description:
+						"Redirect URIs must use https, or http on a loopback address.",
+				});
+
+			const client = await options.ledger.oauth!.registerClient({
+				clientName: body.client_name,
+				redirectUris: body.redirect_uris,
+			});
+
+			return reply.code(201).send({
+				client_id: client.clientId,
+				client_name: client.clientName,
+				redirect_uris: client.redirectUris,
+				token_endpoint_auth_method: "none",
+				grant_types: ["authorization_code", "refresh_token"],
+				response_types: ["code"],
+			});
+		});
+		app.get("/oauth/authorize", async (request, reply) => {
+			const query = z
+				.object({
+					response_type: z.literal("code"),
+					client_id: z.string().min(1).max(200),
+					redirect_uri: z.string().max(500),
+					code_challenge: z.string().min(43).max(128),
+					code_challenge_method: z.literal("S256"),
+					state: z.string().max(500).optional(),
+					resource: z.string().max(500).optional(),
+					scope: z.string().max(200).optional(),
+				})
+				.safeParse(request.query);
+
+			if (!query.success)
+				return reply.code(400).send({
+					error: "invalid_request",
+					error_description:
+						"Authorization needs response_type=code, a client, a redirect URI and an S256 PKCE challenge.",
+				});
+
+			const client = await options.ledger.oauth!.getClient(
+				query.data.client_id,
+			);
+
+			// Never redirect to an unregistered URI.
+			if (
+				!client ||
+				!client.redirectUris.includes(query.data.redirect_uri)
+			)
+				return reply.code(400).send({
+					error: "invalid_client",
+					error_description:
+						"Unknown client or unregistered redirect URI.",
+				});
+			if (query.data.resource && query.data.resource !== oauthResource)
+				return reply.redirect(
+					redirectWith(query.data.redirect_uri, {
+						error: "invalid_target",
+						state: query.data.state ?? null,
+					}),
+				);
+			for (const [id] of connectRequests) liveConnect(id);
+
+			const id = randomUUID();
+
+			connectRequests.set(id, {
+				code: randomBytes(3).toString("hex").toUpperCase(),
+				pollHash: "",
+				harness: "generic_mcp",
+				repository: null,
+				hostname: client.clientName.slice(0, 120),
+				createdAt: Date.now(),
+				state: "pending",
+				secret: null,
+				profileId: null,
+				profileName: null,
+				oauth: {
+					clientId: client.clientId,
+					redirectUri: query.data.redirect_uri,
+					codeChallenge: query.data.code_challenge,
+					state: query.data.state ?? null,
+				},
+			});
+			return reply.redirect(`/app/connect?request=${id}`);
+		});
+		app.post("/oauth/token", async (request, reply) => {
+			const body = (request.body ?? {}) as Record<
+				string,
+				string | undefined
+			>;
+
+			const fail = (error: string, description: string, status = 400) =>
+				reply
+					.code(status)
+					.header("cache-control", "no-store")
+					.send({ error, error_description: description });
+
+			let agentProfileId: string | null = null;
+			const clientId = body.client_id ?? "";
+
+			if (body.resource && body.resource !== oauthResource)
+				return fail(
+					"invalid_target",
+					"Tokens are issued only for this /mcp resource.",
+				);
+			if (body.grant_type === "authorization_code") {
+				const code = oauthCodes.get(body.code ?? "");
+
+				// Codes are single use.
+				oauthCodes.delete(body.code ?? "");
+				if (
+					!code ||
+					code.expiresAt < Date.now() ||
+					code.clientId !== clientId ||
+					code.redirectUri !== body.redirect_uri ||
+					!verifyPkce(body.code_verifier ?? "", code.codeChallenge)
+				)
+					return fail(
+						"invalid_grant",
+						"The code is invalid, expired, or does not match.",
+					);
+				agentProfileId = code.agentProfileId;
+			} else if (body.grant_type === "refresh_token") {
+				agentProfileId =
+					await options.ledger.oauth!.consumeRefreshToken(
+						body.refresh_token ?? "",
+						clientId,
+					);
+				if (!agentProfileId)
+					return fail(
+						"invalid_grant",
+						"The refresh token is invalid or already used.",
+					);
+			} else
+				return fail(
+					"unsupported_grant_type",
+					"Use authorization_code or refresh_token.",
+				);
+			if (
+				!(await options.ledger.authenticateAgentProfile(agentProfileId))
+			)
+				return fail("invalid_grant", "The agent profile is revoked.");
+			return reply.header("cache-control", "no-store").send({
+				access_token: oauthSigner.issue({
+					agentProfileId,
+					audience: oauthResource,
+				}),
+				token_type: "Bearer",
+				expires_in: ACCESS_TOKEN_TTL_SECONDS,
+				refresh_token: await options.ledger.oauth!.issueRefreshToken(
+					clientId,
+					agentProfileId,
+				),
+				scope: "mcp",
+			});
+		});
+	}
+
+	// OTLP/HTTP JSON logs from an agent's own telemetry: token use and cost per session.
+	app.post("/api/agent/otlp/v1/logs", async (request, reply) => {
+		const token = bearerToken(request);
+		const authenticated = token
+			? await options.ledger.authenticateAgentSecret(token)
+			: null;
+
+		if (!authenticated)
+			return reply.code(401).header("www-authenticate", "Bearer").send({
+				error: "A valid agent enrollment secret is required.",
+			});
+
+		const scope = {
+			kind: "agent" as const,
+			organizationId: authenticated.member.organizationId,
+			memberId: authenticated.member.id,
+			agentProfileId: authenticated.profile.id,
+			dataScope: authenticated.profile.dataScope,
+		};
+		const usage = usageFromLogs(request.body);
+
+		for (const item of usage) {
+			const session = await options.ledger.resolveAgentSession(scope, {
+				clientSessionId: item.sessionId,
+				harness: authenticated.profile.harness,
+			});
+
+			await options.ledger.agents.addSessionUsage(session.id, {
+				...(item.costUsd !== null ? { costUsd: item.costUsd } : {}),
+				...(item.inputTokens !== null
+					? { inputTokens: item.inputTokens }
+					: {}),
+				...(item.outputTokens !== null
+					? { outputTokens: item.outputTokens }
+					: {}),
+			});
+		}
+		return reply.send({ partialSuccess: {}, accepted: usage.length });
+	});
+
+	// Harness lifecycle hooks: authenticated by the agent's own secret, never blocking the agent.
+	app.post("/api/agent/hooks", async (request, reply) => {
+		const token = bearerToken(request);
+		const authenticated = token
+			? await options.ledger.authenticateAgentSecret(token)
+			: null;
+
+		if (!authenticated)
+			return reply.code(401).header("www-authenticate", "Bearer").send({
+				error: "A valid agent enrollment secret is required.",
+			});
+
+		const body = z
+			.object({
+				event: z.enum([
+					"session_start",
+					"session_end",
+					"session_failed",
+					"heartbeat",
+				]),
+				clientSessionId: z.string().trim().min(1).max(200),
+				harness: z.string().trim().max(60).optional(),
+				repository: z.string().trim().max(200).optional(),
+				branch: z.string().trim().max(200).optional(),
+				objective: z.string().trim().max(300).optional(),
+			})
+			.parse(request.body);
+		const scope = {
+			kind: "agent" as const,
+			organizationId: authenticated.member.organizationId,
+			memberId: authenticated.member.id,
+			agentProfileId: authenticated.profile.id,
+			dataScope: authenticated.profile.dataScope,
+		};
+
+		// An end event for a session Panini never saw starts nothing.
+		if (
+			(body.event === "session_end" || body.event === "session_failed") &&
+			!(
+				await options.ledger.agents.listSessions({
+					agentProfileIds: [authenticated.profile.id],
+					limit: 200,
+				})
+			).some((item) => item.clientSessionId === body.clientSessionId)
+		)
+			return reply.send({
+				session: null,
+				inferredClaim: null,
+				brief: null,
+			});
+
+		let session = await options.ledger.resolveAgentSession(scope, {
+			clientSessionId: body.clientSessionId,
+			harness: body.harness ?? authenticated.profile.harness,
+			repository: body.repository ?? null,
+			branch: body.branch ?? null,
+			objective: body.objective ?? null,
+		});
+		let inferredClaim = null;
+
+		if (body.event === "session_end" || body.event === "session_failed") {
+			session =
+				(await options.ledger.agents.endSession(
+					session.id,
+					body.event === "session_end" ? "ended" : "failed",
+				)) ?? session;
+		} else if (body.event === "session_start") {
+			inferredClaim = await options.ledger
+				.inferClaimFromBranch(scope, session)
+				.catch(() => null);
+		}
+		await options.ledger.agents.recordActivity({
+			agentProfileId: authenticated.profile.id,
+			memberId: authenticated.member.id,
+			sessionId: session.id,
+			tool: `hook:${body.event}`,
+			actionClass: "session",
+			targetIds: inferredClaim ? [inferredClaim.taskId] : [],
+			resultCount: null,
+			outcome: "ok",
+			detail: null,
+			durationMs: 0,
+		});
+
+		const brief =
+			body.event === "session_start"
+				? await options.ledger.sessionStartBrief(scope, session)
+				: null;
+
+		return reply.send({
+			session: { id: session.id, state: session.state },
+			inferredClaim,
+			brief,
+		});
 	});
 
 	app.post("/api/relay/work-reports", async (request, reply) => {
@@ -1859,6 +2719,34 @@ export async function buildHttpServer(options: HttpServerOptions) {
 			});
 		}
 
+		const profile = await options.ledger.getAgentProfile(
+			device.agentProfileId,
+		);
+
+		if (!profile || profile.status !== "active" || !profile.memberId)
+			return reply.code(401).send({
+				error: "The relay device's agent profile is revoked.",
+			});
+
+		const deviceAccess = {
+			kind: "agent" as const,
+			organizationId: device.organizationId,
+			memberId: profile.memberId,
+			agentProfileId: profile.id,
+			dataScope: profile.dataScope,
+		};
+		const reportTask = envelope.report.workItemId
+			? await options.ledger.getTaskForAccess(
+					envelope.report.workItemId,
+					deviceAccess,
+				)
+			: null;
+
+		if (envelope.report.workItemId && !reportTask)
+			return reply.code(403).send({
+				error: "The relay device's agent profile cannot see this task.",
+			});
+
 		const payload = {
 			deviceId: device.id,
 			agentProfileId: device.agentProfileId,
@@ -1869,7 +2757,7 @@ export async function buildHttpServer(options: HttpServerOptions) {
 			artifactRefs: envelope.report.artifactRefs,
 			verification: envelope.report.verification,
 		};
-		const result = await options.intelligence.record({
+		const result = await options.ledger.recordSource({
 			provider: "agent",
 			installationKey: device.id,
 			providerEventId: envelope.report.reportId,
@@ -1881,7 +2769,9 @@ export async function buildHttpServer(options: HttpServerOptions) {
 				: `agent-report:${envelope.report.reportId}`,
 			sourceUrl: null,
 			contentHash: contentHash(payload),
-			visibility: "company",
+			visibility: reportTask
+				? await options.ledger.taskEvidenceVisibility(reportTask)
+				: "company",
 			payloadVersion: "relay-work-report-v1",
 			payload,
 		});
@@ -1890,166 +2780,6 @@ export async function buildHttpServer(options: HttpServerOptions) {
 		return reply
 			.code(result.inserted ? 201 : 200)
 			.send({ inserted: result.inserted, evidenceId: result.event.id });
-	});
-
-	app.post("/api/intelligence/run", async (request, reply) => {
-		if (evidenceV2Enabled) {
-			return reply.code(409).send({
-				error: "Evidence v2 processes saved source receipts through its worker.",
-			});
-		}
-		if (!options.intelligence.isConfigured()) {
-			return reply.code(409).send({
-				error: "Evidence intelligence is not enabled and configured.",
-			});
-		}
-
-		const body = intelligenceRunRequestSchema.parse(request.body ?? {});
-		const idempotencyKey = String(
-			request.headers["idempotency-key"] ??
-				randomBytes(16).toString("hex"),
-		);
-		const job = await options.jobs.enqueue(
-			"intelligence.run_requested",
-			`intelligence-run:${idempotencyKey}`,
-			{ requestedBy: requestActor(request), eventIds: body.eventIds },
-		);
-
-		return reply.code(202).send({ state: "queued", jobId: job.id });
-	});
-
-	app.post("/api/reconciliation/shadow", async (request, reply) => {
-		if (evidenceV2Enabled) {
-			return reply.code(409).send({
-				error: "The legacy reconciliation shadow route is disabled in evidence v2 mode.",
-			});
-		}
-		if (
-			!options.config.jevApiKey ||
-			options.config.jevWorkAllowedVisibilities.length === 0
-		) {
-			return reply.code(409).send({
-				error: "Jev work shadow mode needs an OpenRouter key and an explicit source-visibility allowlist.",
-			});
-		}
-
-		const body = z
-			.object({ eventId: z.string().uuid() })
-			.strict()
-			.parse(request.body);
-		const bundle = await options.ledger.workEvidenceBundle(
-			body.eventId,
-			options.config.jevWorkAllowedVisibilities,
-		);
-		const judgment = await new JevWorkJudge({
-			apiKey: options.config.jevApiKey,
-			allowedVisibilities: options.config.jevWorkAllowedVisibilities,
-			fetcher: options.ledger.externalModelFetch(
-				"openrouter",
-				"work_judge",
-			),
-		}).judge(bundle);
-
-		return {
-			mode: "shadow",
-			acceptedStateChanged: false,
-			bundle,
-			judgment,
-		};
-	});
-
-	app.post("/api/reconciliation/shadow/draft", async (request, reply) => {
-		if (evidenceV2Enabled) {
-			return reply.code(409).send({
-				error: "The legacy drafting route is disabled in evidence v2 mode.",
-			});
-		}
-
-		const allowed = options.config.jevWorkAllowedVisibilities.filter(
-			(visibility) =>
-				options.config.workDraftAllowedVisibilities.includes(
-					visibility,
-				),
-		);
-
-		if (
-			!options.config.jevApiKey ||
-			!options.config.intelligenceApiKey ||
-			!options.config.intelligenceModel ||
-			allowed.length === 0
-		) {
-			return reply.code(409).send({
-				error: "Work drafting needs both model keys and an explicit shared source-visibility allowlist.",
-			});
-		}
-
-		const body = z
-			.object({
-				eventId: z.string().uuid(),
-				kind: z.enum([
-					"project_purpose",
-					"task_title",
-					"task_description",
-					"change_explanation",
-				]),
-				candidateId: z.string().uuid().nullable(),
-				evidenceEventIds: z.array(z.string().uuid()).min(1).max(12),
-			})
-			.strict()
-			.parse(request.body);
-		const bundle = await options.ledger.workEvidenceBundle(
-			body.eventId,
-			allowed,
-		);
-		const draft = await new OpenAIWorkProseDrafter({
-			apiKey: options.config.intelligenceApiKey,
-			model: options.config.intelligenceModel,
-			baseUrl: options.config.intelligenceBaseUrl,
-			allowedVisibilities: allowed,
-			fetcher: options.ledger.externalModelFetch("openai", "work_prose"),
-		}).draft(bundle, body);
-		const supportProbability = draft.text
-			? await new JevWorkJudge({
-					apiKey: options.config.jevApiKey,
-					allowedVisibilities: allowed,
-					fetcher: options.ledger.externalModelFetch(
-						"openrouter",
-						"draft_support",
-					),
-				}).supportsDraft(bundle, draft)
-			: null;
-
-		return {
-			mode: "shadow",
-			acceptedStateChanged: false,
-			draft,
-			supportProbability,
-		};
-	});
-
-	app.post("/api/adjudication/run", async (request, reply) => {
-		if (evidenceV2Enabled) {
-			return reply.code(409).send({
-				error: "Legacy adjudication is disabled in evidence v2 mode.",
-			});
-		}
-		if (!options.adjudicator.isConfigured()) {
-			return reply.code(409).send({
-				error: "Autonomous adjudication is not enabled and configured.",
-			});
-		}
-
-		const key = String(
-			request.headers["idempotency-key"] ??
-				randomBytes(16).toString("hex"),
-		);
-		const job = await options.jobs.enqueue(
-			"adjudication.run_requested",
-			`adjudication-run:${key}`,
-			{ requestedBy: requestActor(request) },
-		);
-
-		return reply.code(202).send({ state: "queued", jobId: job.id });
 	});
 
 	app.post("/api/tasks", async (request, reply) => {
@@ -2269,6 +2999,19 @@ export async function buildHttpServer(options: HttpServerOptions) {
 		},
 	);
 
+	app.get("/api/changes", async (request) => ({
+		changes: await options.ledger.recentChanges(access(request)),
+	}));
+	app.post<{ Params: { proposalId: string } }>(
+		"/api/changes/:proposalId/undo",
+		async (request) =>
+			options.ledger.undoProposal(
+				request.params.proposalId,
+				requestActor(request),
+				access(request),
+			),
+	);
+
 	app.get<{ Params: { proposalId: string } }>(
 		"/api/proposals/:proposalId",
 		async (request) =>
@@ -2405,15 +3148,47 @@ export async function buildHttpServer(options: HttpServerOptions) {
 		) {
 			principal = { kind: "admin" };
 		} else if (token) {
-			const authenticated =
-				await options.ledger.authenticateAgentSecret(token);
+			const oauthProfileId = oauthSigner?.verify(token, oauthResource);
+			const authenticated = oauthProfileId
+				? await options.ledger.authenticateAgentProfile(oauthProfileId)
+				: await options.ledger.authenticateAgentSecret(token);
 
-			if (authenticated) principal = { kind: "agent", ...authenticated };
+			if (authenticated)
+				principal = {
+					kind: "agent",
+					...authenticated,
+					sessionHint: {
+						clientSessionId: headerText(
+							request.headers["x-panini-session-id"],
+							200,
+						),
+						harness: headerText(
+							request.headers["x-panini-harness"],
+							60,
+						),
+						repository: headerText(
+							request.headers["x-panini-repository"],
+							200,
+						),
+						branch: headerText(
+							request.headers["x-panini-branch"],
+							200,
+						),
+					},
+				};
 		}
 		if (!principal) {
-			return reply.code(401).header("www-authenticate", "Bearer").send({
-				error: "A valid agent enrollment secret is required.",
-			});
+			return reply
+				.code(401)
+				.header(
+					"www-authenticate",
+					oauthSigner
+						? `Bearer resource_metadata="${setupBaseUrl}/.well-known/oauth-protected-resource"`
+						: "Bearer",
+				)
+				.send({
+					error: "A valid agent enrollment secret or access token is required.",
+				});
 		}
 		reply.hijack();
 		await runWithMcpPrincipal(principal, () =>

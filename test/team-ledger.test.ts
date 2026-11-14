@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProposalPolicy } from "../src/domain/policy.js";
 import { TeamLedger } from "../src/domain/team-ledger.js";
 import type { Observation, TaskFields } from "../src/domain/types.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { testStore } from "./helpers/test-store.js";
 import { ReplayVerifier } from "../src/replay/verifier.js";
 import { renderContextPackMarkdown } from "../src/retrieval/context-compiler.js";
 
@@ -44,8 +44,8 @@ function taskObservation(
 	};
 }
 
-function makeLedger() {
-	const store = new MemoryLedgerStore();
+async function makeLedger() {
+	const store = await testStore();
 	const ledger = new TeamLedger(
 		store,
 		new ProposalPolicy({
@@ -76,7 +76,7 @@ async function importAndApprove(ledger: TeamLedger, observation: Observation) {
 
 describe("TeamLedger", () => {
 	it("reconciles Notion and Slack identities into one organization member", async () => {
-		const { ledger } = makeLedger();
+		const { ledger } = await makeLedger();
 		const notion = await ledger.reconcileMemberIdentity(
 			{
 				provider: "notion",
@@ -132,7 +132,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("keeps ambiguous provider identities separate and resolves opaque identities only after a profile arrives", async () => {
-		const { ledger, store } = makeLedger();
+		const { ledger, store } = await makeLedger();
 		const first = await store.upsertMember({
 			subject: "manual:alex-one",
 			displayName: "Alex",
@@ -193,7 +193,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("holds a new source task for review and deduplicates its evidence", async () => {
-		const { ledger } = makeLedger();
+		const { ledger } = await makeLedger();
 		const first = await ledger.ingest(taskObservation("snapshot-1"));
 
 		expect(first.duplicate).toBe(false);
@@ -236,7 +236,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("keeps Notion task rows as evidence without proposing Tasks", async () => {
-		const { ledger, store } = makeLedger();
+		const { ledger, store } = await makeLedger();
 		const first = taskObservation("notion-row-1");
 
 		first.event.provider = "notion";
@@ -257,7 +257,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("holds connector changes for review until a person approves them", async () => {
-		const { ledger, store } = makeLedger();
+		const { ledger, store } = await makeLedger();
 		const imported = await importAndApprove(
 			ledger,
 			taskObservation("snapshot-1"),
@@ -315,7 +315,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("leases outbox jobs to one worker and records retries durably", async () => {
-		const { ledger, store } = makeLedger();
+		const { ledger, store } = await makeLedger();
 
 		await ledger.createTask({ title: "Dispatch me once" }, "user:reviewer");
 
@@ -357,7 +357,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("rejects a stale proposal without partially approving it", async () => {
-		const { ledger } = makeLedger();
+		const { ledger } = await makeLedger();
 		const imported = await importAndApprove(
 			ledger,
 			taskObservation("snapshot-1"),
@@ -383,7 +383,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("keeps source documents as evidence and revokes the superseded snapshot without accepting raw memory", async () => {
-		const { ledger } = makeLedger();
+		const { ledger } = await makeLedger();
 
 		const observation = (id: string, body: string): Observation => ({
 			event: {
@@ -419,7 +419,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("preserves proposal history when editing and rebases stale changes explicitly", async () => {
-		const { ledger } = makeLedger();
+		const { ledger } = await makeLedger();
 		const imported = await importAndApprove(
 			ledger,
 			taskObservation("snapshot-1"),
@@ -462,7 +462,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("deduplicates agent proposal retries durably and requires the caller's base revision", async () => {
-		const { ledger } = makeLedger();
+		const { ledger } = await makeLedger();
 		const task = (
 			await importAndApprove(
 				ledger,
@@ -500,7 +500,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("undoes an accepted change by writing a new revision", async () => {
-		const { ledger } = makeLedger();
+		const { ledger } = await makeLedger();
 		const imported = await importAndApprove(
 			ledger,
 			taskObservation("snapshot-1"),
@@ -525,7 +525,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("undoes a Project link when the original Task had no projectId field", async () => {
-		const { ledger, store } = makeLedger();
+		const { ledger, store } = await makeLedger();
 		const project = await ledger.createProject(
 			{ name: "Bayesian core", outcome: "Verify Bayesian updates." },
 			"user:reviewer",
@@ -565,7 +565,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("retrieves accepted context with citations and a version manifest", async () => {
-		const { ledger, store } = makeLedger();
+		const { ledger, store } = await makeLedger();
 
 		await ledger.createContextEntry(
 			{
@@ -619,7 +619,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("abstains when an explicit query has only a weak lexical overlap", async () => {
-		const { ledger } = makeLedger();
+		const { ledger } = await makeLedger();
 
 		await ledger.createContextEntry(
 			{
@@ -646,7 +646,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("keeps both structured and rendered context packs inside the declared response budget", async () => {
-		const { ledger } = makeLedger();
+		const { ledger } = await makeLedger();
 
 		await ledger.createContextEntry(
 			{
@@ -679,7 +679,7 @@ describe("TeamLedger", () => {
 		vi.useFakeTimers({ toFake: ["Date"] });
 		vi.setSystemTime(new Date("2026-09-01T00:00:00.000Z"));
 
-		const { ledger, store } = makeLedger();
+		const { ledger, store } = await makeLedger();
 		const entry = await ledger.createContextEntry(
 			{
 				kind: "fact",
@@ -762,7 +762,7 @@ describe("TeamLedger", () => {
 		vi.useFakeTimers({ toFake: ["Date"] });
 		vi.setSystemTime(new Date("2026-09-01T00:00:00.000Z"));
 
-		const { ledger } = makeLedger();
+		const { ledger } = await makeLedger();
 
 		await ledger.createContextEntry(
 			{
@@ -800,7 +800,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("returns evidence only for context revisions visible to the requesting agent", async () => {
-		const { ledger, store } = makeLedger();
+		const { ledger, store } = await makeLedger();
 		const publicEvidence = await store.appendSourceEvent({
 			provider: "manual",
 			installationKey: "reviewer",
@@ -891,7 +891,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("compiles an agent-readable context outline and reconciled work brief", async () => {
-		const { ledger } = makeLedger();
+		const { ledger } = await makeLedger();
 		const blocked = await importAndApprove(
 			ledger,
 			taskObservation("context-task-blocked", {
@@ -994,7 +994,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("replays accepted task and context revisions to the same projection hashes", async () => {
-		const { ledger, store } = makeLedger();
+		const { ledger, store } = await makeLedger();
 
 		await importAndApprove(ledger, taskObservation("replay-task"));
 		await ledger.createContextEntry(
@@ -1020,7 +1020,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("projects accepted project and typed dependency records", async () => {
-		const { ledger } = makeLedger();
+		const { ledger } = await makeLedger();
 		const project = await ledger.createProject(
 			{ name: "Launch", outcome: "Release the product." },
 			"user:reviewer",
@@ -1080,7 +1080,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("keeps project changes in a cited, versioned review path", async () => {
-		const { ledger, store } = makeLedger();
+		const { ledger, store } = await makeLedger();
 		const project = await ledger.createProject(
 			{ name: "Launch", outcome: "Ship the first release." },
 			"user:reviewer",
@@ -1137,7 +1137,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("shows exact-reference GitHub activity without changing accepted task status", async () => {
-		const { ledger, store } = makeLedger();
+		const { ledger, store } = await makeLedger();
 		const task = await ledger.createTask(
 			{ title: "ACME-42 Ship import", status: "in_progress" },
 			"user:reviewer",
@@ -1175,7 +1175,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("shows an agent report on its explicit task and preserves accepted status", async () => {
-		const { ledger, store } = makeLedger();
+		const { ledger, store } = await makeLedger();
 		const task = await ledger.createTask(
 			{ title: "Verify import replay", status: "in_progress" },
 			"user:reviewer",
@@ -1211,7 +1211,7 @@ describe("TeamLedger", () => {
 	});
 
 	it("previews and applies a guarded projection rebuild from immutable revisions", async () => {
-		const { ledger, store } = makeLedger();
+		const { ledger, store } = await makeLedger();
 
 		await importAndApprove(ledger, taskObservation("rebuild-task"));
 

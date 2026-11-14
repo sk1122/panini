@@ -1,6 +1,6 @@
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import type { TeamLedger } from "../domain/team-ledger.js";
+import { actorName, type TeamLedger } from "../domain/team-ledger.js";
 import { contentHash } from "../domain/content-hash.js";
 import { normalizeContextPath } from "../domain/context-catalog.js";
 import { canReadTask } from "../domain/access.js";
@@ -13,13 +13,9 @@ import {
 	type Proposal,
 	type ProposalChanges,
 } from "../domain/types.js";
-import type { EvidenceIntelligence } from "../intelligence/engine.js";
-import type {
-	ProposalFitClassifier,
-	ProposalFitResult,
-} from "../adjudication/proposal-fit-classifier.js";
 import { renderContextPackMarkdown } from "../retrieval/context-compiler.js";
 import { renderSourceDocumentMarkdown } from "../retrieval/source-document-library.js";
+import { instrumentTool, mcpSession } from "./activity.js";
 import {
 	currentMcpPrincipal,
 	hasMcpCapability,
@@ -79,65 +75,70 @@ const proposalFitOutputSchema = z
 	})
 	.nullable();
 
-export function createTeamLedgerMcp(
-	ledger: TeamLedger,
-	companyName: string,
-	intelligence: EvidenceIntelligence,
-	proposalClassifier: ProposalFitClassifier | null = null,
-) {
+export function createTeamLedgerMcp(ledger: TeamLedger, companyName: string) {
+	/**
+	 * Agent changes apply at once; nothing waits for a person. Anyone can undo
+	 * them from Panini afterwards. If applying fails (the task changed in the
+	 * meantime, say), the proposal stays visible with the reason.
+	 */
 	async function classifyProposal(proposal: Proposal): Promise<{
 		proposal: Proposal;
-		classification: ProposalFitResult | null;
+		classification: null;
+		applyError?: string;
 	}> {
-		if (!proposalClassifier || proposal.state !== "pending")
+		if (proposal.state !== "pending" && proposal.state !== "escalated")
 			return { proposal, classification: null };
-
-		const access = mcpAccessScope();
-		const [board, context, evidence] = await Promise.all([
-			ledger.board(access),
-			ledger.contextIndex(access),
-			Promise.all(
-				proposal.evidenceIds.map((id) =>
-					ledger.getSourceEventForAccess(id, access),
-				),
-			),
-		]);
-
-		if (evidence.some((event) => event === null)) {
-			throw new DomainError(
-				"Proposal evidence could not be loaded for classification.",
-				"NOT_FOUND",
+		try {
+			await ledger.approveProposal(
+				proposal.id,
+				proposal.requestedBy,
+				"Applied automatically. Undo it in Panini if it is wrong.",
 			);
+			return {
+				proposal: (await ledger.getProposal(proposal.id)) ?? proposal,
+				classification: null,
+			};
+		} catch (error) {
+			return {
+				proposal,
+				classification: null,
+				applyError:
+					error instanceof Error ? error.message : String(error),
+			};
 		}
+	}
 
-		const classification = await proposalClassifier.classify({
-			proposal,
-			tasks: board.tasks.filter((task) => canReadTask(access, task)),
-			context,
-			evidence: evidence.filter((event) => event !== null),
-		});
+	const appliedText = (
+		label: string,
+		result: { proposal: Proposal; applyError?: string },
+	) =>
+		result.applyError
+			? `${label} ${result.proposal.id} could not be applied: ${result.applyError}`
+			: `${label} applied. People can undo it in Panini.`;
 
-		if (classification.decision === "fits")
-			return { proposal, classification };
+	/** What this session holds, the last handoff on it, and unconfirmed team notes. */
+	async function sessionBrief(access: ReturnType<typeof mcpAccessScope>) {
+		const session = await mcpSession(ledger);
 
-		const rejected = await ledger.adjudicateProposal(proposal.id, {
-			action: "reject",
-			actor: `classifier:${classification.model}`,
-			note: classification.reason,
-			details: {
-				decisionSource: "proposal_fit_classifier",
-				model: classification.model,
-				confidence: classification.confidence,
-				fitProbability: classification.fitProbability,
-			},
-		});
-
-		return { proposal: rejected.proposal, classification };
+		return session ? ledger.sessionBrief(access, session) : null;
 	}
 
 	return createMcpHandler(
 		() => {
 			const server = new McpServer({ name: "panini", version: "0.1.0" });
+			const registerTool = server.registerTool.bind(server);
+
+			// Single choke point: every agent tool call is written to the activity log.
+			server.registerTool = ((
+				name: string,
+				config: unknown,
+				handler: (...args: never[]) => unknown,
+			) =>
+				registerTool(
+					name,
+					config as never,
+					instrumentTool(ledger, name, handler) as never,
+				)) as typeof server.registerTool;
 
 			server.registerResource(
 				"company-context",
@@ -577,6 +578,7 @@ export function createTeamLedgerMcp(
 					}),
 					outputSchema: z.object({
 						pack: z.record(z.string(), z.unknown()),
+						session: z.record(z.string(), z.unknown()).optional(),
 					}),
 					annotations: { readOnlyHint: true, idempotentHint: true },
 				},
@@ -601,13 +603,22 @@ export function createTeamLedgerMcp(
 						characterBudget: input.characterBudget,
 						includeSources: hasMcpCapability("source:read"),
 					});
-					const output = { pack: jsonObject(pack) };
+					const brief = await sessionBrief(situation.access);
+					const output = {
+						pack: jsonObject(pack),
+						...(brief ? { session: jsonObject(brief.data) } : {}),
+					};
 
 					return {
 						content: [
 							{
 								type: "text",
-								text: renderContextPackMarkdown(pack),
+								text: [
+									brief?.markdown,
+									renderContextPackMarkdown(pack),
+								]
+									.filter(Boolean)
+									.join("\n\n"),
 							},
 						],
 						structuredContent: output,
@@ -958,11 +969,7 @@ export function createTeamLedgerMcp(
 						content: [
 							{
 								type: "text",
-								text:
-									classified.classification?.decision ===
-									"invalid"
-										? `Proposal ${proposal.id} was rejected by the context-fit classifier.`
-										: `Proposal ${proposal.id} is pending Panini adjudication.`,
+								text: appliedText("Change", classified),
 							},
 						],
 						structuredContent: output,
@@ -975,7 +982,7 @@ export function createTeamLedgerMcp(
 				{
 					title: "Propose a task outcome contract",
 					description:
-						"Set reviewable completion criteria for a task. Acceptance details are recorded when a reviewer approves the proposal.",
+						"Set completion criteria for a task. It applies at once; people can undo it in Panini.",
 					inputSchema: z.strictObject({
 						clientEventId: z.string().trim().min(1).max(200),
 						taskId: z.uuid(),
@@ -1004,13 +1011,14 @@ export function createTeamLedgerMcp(
 							},
 							mcpAccessScope(),
 						);
-					const output = { proposal: jsonObject(proposal) };
+					const applied = await classifyProposal(proposal);
+					const output = { proposal: jsonObject(applied.proposal) };
 
 					return {
 						content: [
 							{
 								type: "text",
-								text: `Outcome contract proposal ${proposal.id} is pending review.`,
+								text: appliedText("Outcome contract", applied),
 							},
 						],
 						structuredContent: output,
@@ -1023,7 +1031,7 @@ export function createTeamLedgerMcp(
 				{
 					title: "Propose a new task",
 					description:
-						"Create a reviewable proposal for a new task. This never creates accepted work directly.",
+						"Create a task. It applies at once; people can undo it in Panini.",
 					inputSchema: z.object({
 						clientEventId: z.string().trim().min(1).max(200),
 						title: z.string().trim().min(1).max(180),
@@ -1073,11 +1081,7 @@ export function createTeamLedgerMcp(
 						content: [
 							{
 								type: "text",
-								text:
-									classified.classification?.decision ===
-									"invalid"
-										? `Task proposal ${proposal.id} was rejected by the context-fit classifier.`
-										: `Task proposal ${proposal.id} is pending Panini adjudication.`,
+								text: appliedText("Task", classified),
 							},
 						],
 						structuredContent: output,
@@ -1251,11 +1255,7 @@ export function createTeamLedgerMcp(
 						content: [
 							{
 								type: "text",
-								text:
-									classified.classification?.decision ===
-									"invalid"
-										? `Context proposal ${proposal.id} was rejected by the context-fit classifier.`
-										: `Context proposal ${proposal.id} is pending Panini adjudication.`,
+								text: appliedText("Context", classified),
 							},
 						],
 						structuredContent: output,
@@ -1307,18 +1307,19 @@ export function createTeamLedgerMcp(
 				},
 				async (report) => {
 					requireMcpCapability("evidence:report");
-					if (report.workItemId) {
-						const task = await ledger.getTaskForAccess(
-							report.workItemId,
-							mcpAccessScope(),
-						);
 
-						if (!task)
-							throw new DomainError(
-								`Task ${report.workItemId} does not exist.`,
-								"NOT_FOUND",
-							);
-					}
+					const task = report.workItemId
+						? await ledger.getTaskForAccess(
+								report.workItemId,
+								mcpAccessScope(),
+							)
+						: null;
+
+					if (report.workItemId && !task)
+						throw new DomainError(
+							`Task ${report.workItemId} does not exist.`,
+							"NOT_FOUND",
+						);
 
 					const actor = mcpActor();
 					const payload = {
@@ -1329,7 +1330,7 @@ export function createTeamLedgerMcp(
 						artifactRefs: report.artifactRefs,
 						verification: report.verification,
 					};
-					const result = await intelligence.record({
+					const result = await ledger.recordSource({
 						provider: "agent",
 						installationKey: mcpInstallationKey(),
 						providerEventId: report.reportId,
@@ -1341,7 +1342,10 @@ export function createTeamLedgerMcp(
 							: `agent-report:${report.reportId}`,
 						sourceUrl: null,
 						contentHash: contentHash(payload),
-						visibility: "company",
+						// A report on restricted work stays as restricted as the work.
+						visibility: task
+							? await ledger.taskEvidenceVisibility(task)
+							: "company",
 						payloadVersion: "work-report-v1",
 						payload,
 					});
@@ -1360,6 +1364,328 @@ export function createTeamLedgerMcp(
 							},
 						],
 						structuredContent: output,
+					};
+				},
+			);
+
+			server.registerTool(
+				"task_claim",
+				{
+					title: "Claim a task",
+					description:
+						"Say this session is working on a task. Claims are advisory and expire after two hours without activity on the task. If another agent holds a claim you are told who, and may join. Claiming accepts an observed task and moves planned work into progress. The response includes the latest handoff note.",
+					inputSchema: z.object({ taskId: z.string().uuid() }),
+					outputSchema: z.object({
+						claim: z.record(z.string(), z.unknown()),
+						others: z.array(z.record(z.string(), z.unknown())),
+						task: z.record(z.string(), z.unknown()),
+						handoff: z.record(z.string(), z.unknown()).nullable(),
+					}),
+					annotations: {
+						readOnlyHint: false,
+						destructiveHint: false,
+						idempotentHint: true,
+					},
+				},
+				async ({ taskId }) => {
+					requireMcpCapability("work:propose");
+
+					const session = await mcpSession(ledger);
+
+					if (!session)
+						throw new DomainError(
+							"Claims belong to an agent session; the admin token cannot claim work.",
+							"FORBIDDEN",
+						);
+
+					const result = await ledger.claimTask({
+						access: mcpAccessScope(),
+						session,
+						taskId,
+						actor: mcpActor(),
+					});
+					const output = {
+						claim: jsonObject(result.claim),
+						others: result.others.map(jsonObject),
+						task: jsonObject({
+							id: result.task.id,
+							title: result.task.title,
+							status: result.task.status,
+							standing: result.task.standing ?? "accepted",
+							version: result.task.version,
+						}),
+						handoff: result.handoff
+							? jsonObject(result.handoff)
+							: null,
+					};
+					const lines = [
+						`Claimed "${result.task.title}" until ${result.claim.expiresAt}. Status: ${result.task.status}.`,
+						...result.others.map(
+							(other) =>
+								`Also working on it: ${other.agentName ?? "an agent"} (owner ${other.owner ?? "unknown"}) since ${other.claimedAt}.`,
+						),
+						...(result.handoff
+							? [
+									`Latest handoff by ${actorName(result.handoff.author)}: done: ${result.handoff.done || "-"}; not done: ${result.handoff.notDone || "-"}; next: ${result.handoff.nextStep || "-"}.`,
+								]
+							: []),
+					];
+
+					return {
+						content: [{ type: "text", text: lines.join("\n") }],
+						structuredContent: output,
+					};
+				},
+			);
+
+			server.registerTool(
+				"task_release",
+				{
+					title: "Release a task claim",
+					description:
+						"Stop working on a task, or on every task this session holds when taskId is omitted. Write a handoff note first if work remains.",
+					inputSchema: z.object({
+						taskId: z.string().uuid().optional(),
+					}),
+					outputSchema: z.object({ released: z.number().int() }),
+					annotations: {
+						readOnlyHint: false,
+						destructiveHint: false,
+						idempotentHint: true,
+					},
+				},
+				async ({ taskId }) => {
+					requireMcpCapability("work:propose");
+
+					const session = await mcpSession(ledger);
+					const released = session
+						? await ledger.releaseTaskClaims({
+								session,
+								...(taskId ? { taskId } : {}),
+							})
+						: [];
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Released ${released.length} claim(s).`,
+							},
+						],
+						structuredContent: { released: released.length },
+					};
+				},
+			);
+
+			server.registerTool(
+				"handoff_write",
+				{
+					title: "Write a handoff note",
+					description:
+						"Leave a short note for the next person or agent on a task: what is done, what is not done, open questions, the next step, and artifacts (PR or commit links). The next session that claims the task sees it first. Do not include secrets or transcripts.",
+					inputSchema: z.object({
+						clientEventId: z.string().min(1).max(200),
+						taskId: z.string().uuid(),
+						done: z.string().max(4_000).default(""),
+						notDone: z.string().max(4_000).default(""),
+						openQuestions: z.string().max(4_000).default(""),
+						nextStep: z.string().max(4_000).default(""),
+						artifacts: z
+							.array(z.string().max(1_000))
+							.max(50)
+							.default([]),
+					}),
+					outputSchema: z.object({
+						handoff: z.record(z.string(), z.unknown()),
+					}),
+					annotations: {
+						readOnlyHint: false,
+						destructiveHint: false,
+						idempotentHint: true,
+					},
+				},
+				async (input) => {
+					requireMcpCapability("evidence:report");
+
+					const handoff = await ledger.writeHandoff({
+						access: mcpAccessScope(),
+						session: await mcpSession(ledger),
+						author: mcpActor(),
+						...input,
+					});
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Handoff ${handoff.id} saved on task ${handoff.taskId}.`,
+							},
+						],
+						structuredContent: { handoff: jsonObject(handoff) },
+					};
+				},
+			);
+
+			server.registerTool(
+				"note_drop",
+				{
+					title: "Drop a team note",
+					description:
+						"Drop anything worth keeping for the team: a finding, a gotcha, a link, a half-made decision. Notes are unconfirmed evidence; Panini's nightly reconcile run sorts them into facts, tasks or leaves them as notes. Do not include secrets or transcripts.",
+					inputSchema: z.object({
+						clientEventId: z.string().min(1).max(200),
+						text: z.string().min(1).max(8_000),
+						taskId: z.string().uuid().nullable().default(null),
+						project: z
+							.string()
+							.trim()
+							.min(1)
+							.max(240)
+							.nullable()
+							.default(null),
+						links: z
+							.array(z.string().max(1_000))
+							.max(20)
+							.default([]),
+					}),
+					outputSchema: z.object({
+						note: z.record(z.string(), z.unknown()),
+					}),
+					annotations: {
+						readOnlyHint: false,
+						destructiveHint: false,
+						idempotentHint: true,
+					},
+				},
+				async (input) => {
+					requireMcpCapability("evidence:report");
+
+					const note = await ledger.dropNote({
+						access: mcpAccessScope(),
+						session: await mcpSession(ledger),
+						author: mcpActor(),
+						...input,
+					});
+
+					return {
+						content: [
+							{ type: "text", text: `Note ${note.id} saved.` },
+						],
+						structuredContent: { note: jsonObject(note) },
+					};
+				},
+			);
+
+			server.registerTool(
+				"decision_propose",
+				{
+					title: "Draft a decision record",
+					description:
+						"Draft what was decided, by whom, why, and which options were rejected. It is recorded right away; people can undo it in Panini.",
+					inputSchema: z.object({
+						clientEventId: z.string().min(1).max(200),
+						title: z.string().trim().min(1).max(200),
+						statement: z.string().trim().min(1).max(2_000),
+						reason: z.string().max(4_000).default(""),
+						rejectedOptions: z
+							.array(z.string().max(500))
+							.max(20)
+							.default([]),
+						decidedBy: z.string().trim().min(1).max(200),
+						decidedAt: z
+							.string()
+							.datetime({ offset: true })
+							.optional(),
+						supersedes: z
+							.string()
+							.max(500)
+							.nullable()
+							.default(null),
+						path: z.string().max(500).optional(),
+						evidenceIds: z
+							.array(z.string().uuid())
+							.max(20)
+							.default([]),
+					}),
+					outputSchema: z.object({
+						proposal: z.record(z.string(), z.unknown()),
+					}),
+					annotations: {
+						readOnlyHint: false,
+						destructiveHint: false,
+						idempotentHint: true,
+					},
+				},
+				async (input) => {
+					requireMcpCapability("context:propose");
+
+					const proposal = await ledger.proposeDecision({
+						access: mcpAccessScope(),
+						session: await mcpSession(ledger),
+						requestedBy: mcpActor(),
+						clientEventId: input.clientEventId,
+						title: input.title,
+						statement: input.statement,
+						reason: input.reason,
+						rejectedOptions: input.rejectedOptions,
+						decidedBy: input.decidedBy,
+						decidedAt: input.decidedAt ?? new Date().toISOString(),
+						supersedes: input.supersedes,
+						evidenceIds: input.evidenceIds,
+						...(input.path ? { path: input.path } : {}),
+					});
+					const applied = await classifyProposal(proposal);
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: appliedText("Decision", applied),
+							},
+						],
+						structuredContent: {
+							proposal: jsonObject(applied.proposal),
+						},
+					};
+				},
+			);
+
+			server.registerTool(
+				"session_end",
+				{
+					title: "End this session",
+					description:
+						"Close the current agent session and release its claims. Write handoff notes first for unfinished work.",
+					inputSchema: z.object({
+						state: z.enum(["ended", "failed"]).default("ended"),
+					}),
+					outputSchema: z.object({
+						session: z.record(z.string(), z.unknown()).nullable(),
+					}),
+					annotations: {
+						readOnlyHint: false,
+						destructiveHint: false,
+						idempotentHint: true,
+					},
+				},
+				async ({ state }) => {
+					const session = await mcpSession(ledger);
+					const ended = session
+						? await ledger.agents.endSession(session.id, state)
+						: null;
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: ended
+									? `Session ${ended.id} is ${ended.state}.`
+									: "No agent session to end.",
+							},
+						],
+						structuredContent: {
+							session: ended ? jsonObject(ended) : null,
+						},
 					};
 				},
 			);

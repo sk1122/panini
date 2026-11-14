@@ -226,13 +226,8 @@ export class SlackCaptureAdapter {
 				reason: "The envelope is not a reaction capture event.",
 			};
 		}
-		if ((this.policy.captureMode ?? "reaction") === "all_messages") {
-			return {
-				outcome: "ignored",
-				reason: "Reaction capture is redundant in all-messages mode.",
-			};
-		}
 
+		// In all-messages mode the reaction still matters: it asks for an immediate run.
 		const item = event.item;
 
 		if (!event.reaction || !this.reactionSet.has(event.reaction)) {

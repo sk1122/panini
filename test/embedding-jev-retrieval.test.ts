@@ -8,7 +8,7 @@ import {
 	type SemanticDocumentRanker,
 } from "../src/retrieval/embedding-document-ranker.js";
 import type { RelevanceRanker } from "../src/retrieval/jev-ranker.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { testStore } from "./helpers/test-store.js";
 
 const policy = new ProposalPolicy({
 	autoApproveNewTasks: true,
@@ -18,7 +18,7 @@ const policy = new ProposalPolicy({
 
 describe("embedding candidate selection followed by Jev", () => {
 	it("sends Jev a semantic file shortlist plus accepted facts", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const seen: string[][] = [];
 		const ranker: RelevanceRanker = {
 			async rank(_question, entries) {
@@ -92,7 +92,7 @@ describe("embedding candidate selection followed by Jev", () => {
 	});
 
 	it("never sends hidden context to the embedding search or Jev", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const seenSemantic: string[][] = [];
 		const seenJev: string[][] = [];
 		const semantic: SemanticDocumentRanker = {
@@ -169,7 +169,7 @@ describe("embedding candidate selection followed by Jev", () => {
 	});
 
 	it("rechecks a file revoked during embedding before sending content to Jev", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		let sourceEventId = "";
 		const semantic: SemanticDocumentRanker = {
 			model: "openai/text-embedding-3-small",
@@ -211,7 +211,7 @@ describe("embedding candidate selection followed by Jev", () => {
 	});
 
 	it("keeps Jev retrieval available when query embedding fails", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const seen: string[][] = [];
 		const semantic: SemanticDocumentRanker = {
 			model: "openai/text-embedding-3-small",

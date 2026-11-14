@@ -3,17 +3,15 @@ import pg from "pg";
 import { migrate } from "../src/db/migrate.js";
 import { PostgresLedgerStore } from "../src/store/postgres.js";
 import type { LedgerStore } from "../src/domain/store.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { evidenceV2Default, type RuntimeConfig } from "../src/config.js";
-import { AutonomousAdjudicator } from "../src/adjudication/engine.js";
 import { GithubAppClient } from "../src/connectors/github/app-client.js";
 import { ProposalPolicy } from "../src/domain/policy.js";
 import { TeamLedger } from "../src/domain/team-ledger.js";
 import { buildHttpServer } from "../src/http/server.js";
-import { EvidenceIntelligence } from "../src/intelligence/engine.js";
 import { OutboxQueue } from "../src/outbox/runtime.js";
 import { ReplayVerifier } from "../src/replay/verifier.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { testStore } from "./helpers/test-store.js";
 import {
 	createRelayEnvelope,
 	serializeRelayEnvelope,
@@ -86,7 +84,8 @@ const config: RuntimeConfig = {
 	openrouterEmbeddingModel: "openai/text-embedding-3-small",
 };
 
-const LOCAL_MEMBER_ID = "00000000-0000-4000-8000-000000000002";
+// Set by makeSystem to the local administrator of the store the test built.
+let LOCAL_MEMBER_ID = "";
 
 const openApps: Array<Awaited<ReturnType<typeof buildHttpServer>>> = [];
 
@@ -104,36 +103,19 @@ async function makeSystem(
 	},
 	suppliedStore?: LedgerStore,
 ) {
-	const store = suppliedStore ?? new MemoryLedgerStore();
+	const store = suppliedStore ?? (await testStore());
+
+	LOCAL_MEMBER_ID = (await store.listMembers()).find(
+		(member) => member.subject === "bootstrap:local-admin",
+	)!.id;
+
 	const ledger = new TeamLedger(
 		store,
 		new ProposalPolicy(runtimeConfig.app.policy),
 	);
-	const intelligence = new EvidenceIntelligence({
-		store,
-		ledger,
-		interpreter: null,
-		companyName: runtimeConfig.app.company.name,
-		config: runtimeConfig.app.intelligence,
-		log: { info() {}, error() {} },
-	});
-	const adjudicator = new AutonomousAdjudicator({
-		store,
-		ledger,
-		provider: null,
-		companyName: runtimeConfig.app.company.name,
-		config: runtimeConfig.app.adjudication,
-		completionPolicy: {
-			minimumEvidenceItems: 2,
-			evidenceProviders: ["agent"],
-		},
-		log: { info() {}, error() {} },
-	});
 	const app = await buildHttpServer({
 		ledger,
 		config: runtimeConfig,
-		intelligence,
-		adjudicator,
 		jobs: new OutboxQueue(store),
 		replay: new ReplayVerifier(store),
 		...(githubAppClient ? { githubAppClient } : {}),
@@ -2208,164 +2190,6 @@ describe("HTTP server", () => {
 		expect(allowedReport.message.result.isError).not.toBe(true);
 	});
 
-	it("classifies agent task and context proposals before leaving them pending", async () => {
-		const classifier = {
-			classify: vi.fn(async (input: { proposal: { kind: string } }) =>
-				input.proposal.kind === "context_fact_upsert"
-					? {
-							decision: "invalid",
-							confidence: 0.94,
-							fitProbability: 0.06,
-							model: "jev:test",
-							reason: "The claim is misplaced or unsupported.",
-						}
-					: {
-							decision: "fits",
-							confidence: 0.91,
-							fitProbability: 0.91,
-							model: "jev:test",
-							reason: "The task fits the accepted work structure.",
-						},
-			),
-		};
-		const { app, ledger, store } = await makeSystem(
-			config,
-			undefined,
-			classifier,
-		);
-
-		await ledger.createTask(
-			{ title: "Ship Alpha", project: "Alpha" },
-			"user:admin",
-		);
-		await ledger.createContextEntry(
-			{
-				kind: "fact",
-				path: "/projects/alpha/goal",
-				title: "Alpha goal",
-				factType: "reference",
-				value: "Ship Alpha safely.",
-			},
-			"user:admin",
-		);
-
-		const evidence = (
-			await store.appendSourceEvent({
-				...sourceDocumentPayload("proposal-fit"),
-				contentHash:
-					"0000000000000000000000000000000000000000000000000000000000000000",
-			})
-		).event;
-		const created = await app.inject({
-			method: "POST",
-			url: "/api/agents",
-			headers: { authorization: "Bearer test-secret" },
-			payload: {
-				memberId: LOCAL_MEMBER_ID,
-				name: "Proposal classifier",
-				harness: "codex",
-				capabilities: [
-					"work:read",
-					"work:propose",
-					"context:read",
-					"context:propose",
-					"source:read",
-				],
-				dataScope: {
-					projects: ["Alpha"],
-					contextPaths: ["/projects/alpha"],
-					sourceVisibilities: ["company"],
-				},
-			},
-		});
-		const secret = created.json().secret;
-
-		const task = await callMcp(app, secret, "task_create_proposal", {
-			clientEventId: "fit-task",
-			title: "Verify Alpha release",
-			project: "Alpha",
-			rationale: "A concrete follow-up to the accepted Alpha goal.",
-			evidenceIds: [evidence.id],
-		});
-
-		expect(task.message.result.structuredContent).toMatchObject({
-			classification: { decision: "fits", model: "jev:test" },
-			proposal: { state: "pending" },
-		});
-
-		const context = await callMcp(app, secret, "context_proposal_create", {
-			kind: "fact",
-			clientEventId: "invalid-context",
-			path: "/projects/alpha/random",
-			title: "Unrelated claim",
-			factType: "other",
-			value: "This does not belong here.",
-			rationale: "Try to add unrelated context.",
-			evidenceIds: [evidence.id],
-		});
-
-		expect(context.message.result.structuredContent).toMatchObject({
-			classification: { decision: "invalid", model: "jev:test" },
-			proposal: { state: "rejected", decidedBy: "classifier:jev:test" },
-		});
-		expect(classifier.classify).toHaveBeenCalledTimes(2);
-		expect(classifier.classify.mock.calls[0]![0]).toMatchObject({
-			tasks: [expect.objectContaining({ title: "Ship Alpha" })],
-			context: {
-				facts: [
-					expect.objectContaining({ path: "/projects/alpha/goal" }),
-				],
-			},
-			evidence: [expect.objectContaining({ id: evidence.id })],
-		});
-	});
-
-	it("leaves a proposal pending when the Jev classifier is unavailable", async () => {
-		const classifier = {
-			classify: vi.fn(async () => {
-				throw new Error("Jev unavailable");
-			}),
-		};
-		const { app, store } = await makeSystem(config, undefined, classifier);
-		const created = await app.inject({
-			method: "POST",
-			url: "/api/agents",
-			headers: { authorization: "Bearer test-secret" },
-			payload: {
-				memberId: LOCAL_MEMBER_ID,
-				name: "Fail closed",
-				harness: "codex",
-				capabilities: ["work:read", "work:propose"],
-				dataScope: {
-					projects: ["Alpha"],
-					contextPaths: ["/"],
-					sourceVisibilities: ["company"],
-				},
-			},
-		});
-		const result = await callMcp(
-			app,
-			created.json().secret,
-			"task_create_proposal",
-			{
-				clientEventId: "classifier-outage",
-				title: "Preserve proposal",
-				project: "Alpha",
-				rationale: "Do not accept unchecked work.",
-			},
-		);
-
-		expect(result.message.result.isError).toBe(true);
-		expect(await store.listProposals("pending")).toEqual([
-			expect.objectContaining({
-				kind: "task_create",
-				changes: expect.objectContaining({
-					title: "Preserve proposal",
-				}),
-			}),
-		]);
-	});
-
 	it("accepts a signed offline relay report exactly once and denies a revoked device", async () => {
 		const app = await makeApp();
 		const admin = { authorization: "Bearer test-secret" };
@@ -2575,18 +2399,6 @@ describe("HTTP server", () => {
 		expect(
 			(await store.listSourceInstallations())[0]?.config.repositoryIds,
 		).toEqual([42]);
-	});
-
-	it("keeps hosted work drafting gated without explicit external-processing scope", async () => {
-		const app = await makeApp();
-		const response = await app.inject({
-			method: "POST",
-			url: "/api/reconciliation/shadow/draft",
-			headers: { authorization: "Bearer test-secret" },
-			payload: {},
-		});
-
-		expect(response.statusCode).toBe(409);
 	});
 
 	it("records a human-authored project edit as a cited revision", async () => {

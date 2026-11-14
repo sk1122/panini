@@ -20,6 +20,10 @@ import {
 import type { TaskProposalChanges } from "../domain/types.js";
 import { createHash, randomUUID } from "node:crypto";
 import pg, { type PoolClient, type QueryResultRow } from "pg";
+import type { AgentLedgerStore } from "../domain/agent-ledger.js";
+import { PostgresAgentLedger } from "./agent-ledger-postgres.js";
+import { PostgresReconcileRuns } from "../reconcile/runner.js";
+import { PostgresOAuthStore } from "../security/oauth.js";
 import { contextEntryFromProposal } from "../domain/context-catalog.js";
 import { DomainError } from "../domain/errors.js";
 import {
@@ -1141,6 +1145,9 @@ function outboxJobFromRow(row: OutboxJobRow): OutboxJob {
 }
 
 export class PostgresLedgerStore implements LedgerStore {
+	readonly agentLedger: AgentLedgerStore;
+	readonly reconcileRuns: PostgresReconcileRuns;
+	readonly oauth: PostgresOAuthStore;
 	private readonly pool: pg.Pool;
 	private readonly cipher: PayloadCipher;
 	private readonly contentReady: Promise<void>;
@@ -1156,7 +1163,13 @@ export class PostgresLedgerStore implements LedgerStore {
 		options: { backfillLegacyContent?: boolean } = {},
 	) {
 		this.pool = new Pool({ connectionString: databaseUrl, max: 10 });
-		this.cipher = new PayloadCipher(contentEncryptionKey);
+		this.agentLedger = new PostgresAgentLedger(this.pool, organizationId);
+		this.reconcileRuns = new PostgresReconcileRuns(
+			this.pool,
+			organizationId,
+		);
+		this.oauth = new PostgresOAuthStore(this.pool, organizationId);
+		this.cipher = PayloadCipher.fromEnvironment(contentEncryptionKey);
 		this.contentReady =
 			options.backfillLegacyContent === false
 				? Promise.resolve()
@@ -2823,7 +2836,7 @@ export class PostgresLedgerStore implements LedgerStore {
 		const result = await this.pool.query<OutboxJobRow>(
 			`INSERT INTO outbox_jobs
         (id, organization_id, topic, dedupe_key, payload, state, attempts, available_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,'pending',0,$6)
+       VALUES ($1,$2,$3,$4,$5::jsonb,'pending',0,COALESCE($6::timestamptz, now()))
        ON CONFLICT (organization_id, dedupe_key) DO UPDATE SET dedupe_key=outbox_jobs.dedupe_key
        RETURNING *`,
 			[
@@ -2832,7 +2845,8 @@ export class PostgresLedgerStore implements LedgerStore {
 				input.topic,
 				input.dedupeKey,
 				JSON.stringify(input.payload),
-				input.availableAt ?? new Date().toISOString(),
+				// Claims compare against the database clock, so "now" must come from it too.
+				input.availableAt ?? null,
 			],
 		);
 
@@ -3471,7 +3485,7 @@ export class PostgresLedgerStore implements LedgerStore {
 				await client.query(
 					`INSERT INTO outbox_jobs
             (id, organization_id, topic, dedupe_key, payload, state, attempts, available_at)
-           VALUES ($1,$2,'evidence.source.recorded',$3,$4::jsonb,'pending',0,$5)
+           VALUES ($1,$2,'evidence.source.recorded',$3,$4::jsonb,'pending',0,LEAST($5::timestamptz, now()))
            ON CONFLICT (organization_id, dedupe_key) DO NOTHING`,
 					[
 						randomUUID(),
@@ -3496,7 +3510,7 @@ export class PostgresLedgerStore implements LedgerStore {
 					await client.query(
 						`INSERT INTO outbox_jobs
               (id,organization_id,topic,dedupe_key,payload,state,attempts,available_at)
-             VALUES ($1,$2,'evidence.source.superseded',$3,$4::jsonb,'pending',0,$5)
+             VALUES ($1,$2,'evidence.source.superseded',$3,$4::jsonb,'pending',0,LEAST($5::timestamptz, now()))
              ON CONFLICT (organization_id,dedupe_key) DO NOTHING`,
 						[
 							randomUUID(),
@@ -9565,7 +9579,7 @@ export class PostgresLedgerStore implements LedgerStore {
 		await client.query(
 			`INSERT INTO outbox_jobs
         (id, organization_id, topic, dedupe_key, payload, state, attempts, available_at, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,'pending',0,$6,$6,$6)
+       VALUES ($1,$2,$3,$4,$5::jsonb,'pending',0,LEAST($6::timestamptz, now()),$6,$6)
        ON CONFLICT (organization_id, dedupe_key) DO NOTHING`,
 			[
 				randomUUID(),

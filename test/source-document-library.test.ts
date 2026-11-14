@@ -4,7 +4,7 @@ import {
 	LedgerSourceDocumentLibrary,
 	sourceDocumentSections,
 } from "../src/retrieval/source-document-library.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { localAdminId, testStore } from "./helpers/test-store.js";
 
 function documentEvent(
 	markdown: string,
@@ -71,7 +71,7 @@ describe("source document library", () => {
 	});
 
 	it("lists summaries, reads a selected section, and fails closed after revocation", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const event = (
 			await store.appendSourceEvent(
 				documentEvent(
@@ -118,7 +118,7 @@ describe("source document library", () => {
 	});
 
 	it("lists and reads captured Slack messages as pinned untrusted evidence", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const event = (
 			await store.appendSourceEvent({
 				provider: "slack",
@@ -144,7 +144,7 @@ describe("source document library", () => {
 		const access = {
 			kind: "agent" as const,
 			organizationId: "00000000-0000-4000-8000-000000000001",
-			memberId: "00000000-0000-4000-8000-000000000002",
+			memberId: await localAdminId(store),
 			agentProfileId: "00000000-0000-4000-8000-000000000003",
 			dataScope: {
 				projects: [],

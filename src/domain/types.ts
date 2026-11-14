@@ -299,7 +299,12 @@ export interface TaskFields {
 	sourceUrl: string | null;
 	outcomeContract?: import("./evidence-types.js").OutcomeContract | null;
 	result?: import("./evidence-types.js").WorkResult;
+	/** Observed items came from chat or a model and are not yet confirmed. Absent means accepted. */
+	standing?: TaskStanding;
 }
+
+export const taskStandings = ["observed", "accepted"] as const;
+export type TaskStanding = (typeof taskStandings)[number];
 
 export interface Task extends TaskFields {
 	id: string;

@@ -2,10 +2,25 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { DomainError } from "../domain/errors.js";
 import type { AccessScope } from "../domain/access.js";
 import type { AgentCapability, AgentProfile, Member } from "../domain/types.js";
+import type { AgentSession } from "../domain/agent-ledger.js";
+
+export interface McpSessionHint {
+	clientSessionId: string | null;
+	harness: string | null;
+	repository: string | null;
+	branch: string | null;
+}
 
 export type McpPrincipal =
 	| { kind: "admin" }
-	| { kind: "agent"; profile: AgentProfile; member: Member };
+	| {
+			kind: "agent";
+			profile: AgentProfile;
+			member: Member;
+			sessionHint?: McpSessionHint;
+			/** Resolved once per request; every tool call belongs to one session. */
+			session?: Promise<AgentSession>;
+	  };
 
 const principals = new AsyncLocalStorage<McpPrincipal>();
 

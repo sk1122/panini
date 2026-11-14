@@ -12,7 +12,7 @@ import {
 import { DomainError } from "../src/domain/errors.js";
 import { ProposalPolicy } from "../src/domain/policy.js";
 import { TeamLedger } from "../src/domain/team-ledger.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { testStore } from "./helpers/test-store.js";
 
 const repository: GithubRepository = {
 	id: 42,
@@ -24,8 +24,8 @@ const repository: GithubRepository = {
 	archived: false,
 };
 
-function system(client: GithubSyncClient) {
-	const store = new MemoryLedgerStore();
+async function system(client: GithubSyncClient) {
+	const store = await testStore();
 	const ledger = new TeamLedger(
 		store,
 		new ProposalPolicy({
@@ -149,7 +149,7 @@ describe("GitHub App connection and sync", () => {
 				throw new Error(`Unexpected path: ${path}`);
 			},
 		};
-		const { ledger, sync } = system(client);
+		const { ledger, sync } = await system(client);
 		const installation = await ledger.configureInstallation(
 			{
 				provider: "github",
@@ -284,7 +284,7 @@ describe("GitHub App connection and sync", () => {
 				throw new Error(`Unexpected path: ${path}`);
 			},
 		};
-		const { ledger, sync } = system(client);
+		const { ledger, sync } = await system(client);
 		const installation = await ledger.configureInstallation(
 			{
 				provider: "github",
@@ -376,7 +376,7 @@ describe("GitHub App connection and sync", () => {
 				throw new Error(`Unexpected path: ${path}`);
 			},
 		};
-		const { ledger, sync } = system(client);
+		const { ledger, sync } = await system(client);
 		const installation = await ledger.configureInstallation(
 			{
 				provider: "github",

@@ -615,7 +615,8 @@ it("publishes strict schemas and completes nullable writes without argument-erro
 
 				results.push(result);
 				expect(result.error).toBeUndefined();
-				if (results.length === 1) expect(result.owner).toBe("Alice");
+				// Changes apply at once; people undo them if wrong.
+				if (results.length === 1) expect(result.state).toBeUndefined();
 				if (results.length === 3) factId = result.id;
 			}
 
@@ -721,10 +722,16 @@ it("publishes strict schemas and completes nullable writes without argument-erro
 		"completed",
 	);
 	expect(requests).toHaveLength(6);
+	// Changes apply at once; nothing waits for a person.
 	expect((await store.getTask(task.id))?.owner).toBeNull();
-	expect((await store.getTask(task.id))?.sourceUrl).toBe(
-		"https://example.com/proof",
-	);
+	expect((await store.getTask(task.id))?.status).toBe("done");
+	expect(
+		(await store.listTaskProposals(task.id)).filter(
+			(p) =>
+				p.requestedBy === "observation-agent" &&
+				p.state === "auto_applied",
+		),
+	).toHaveLength(2);
 	expect((await store.getContextEntry(factId!))?.kind).toBe("fact");
 	expect(JSON.stringify(results)).not.toContain("history");
 	expect(JSON.stringify(results)).not.toContain("evidenceIds");
@@ -829,10 +836,8 @@ it("replays recorded format hints and misplaced rationale without tool-error cor
 		"completed",
 	);
 	expect(calls).toBe(5);
+	// A chat report of done applies at once; people undo it if wrong.
 	expect((await store.getTask(task.id))?.status).toBe("done");
-	expect((await store.getTask(task.id))?.sourceUrl).toBe(
-		"https://example.com/recorded",
-	);
 	expect(
 		(await store.listTaskProposals(task.id)).find(
 			(p) => p.requestedBy === "observation-agent",

@@ -6,7 +6,7 @@ import { syncSlackMemberDirectory } from "../src/connectors/slack/startup-sync.j
 import { ProposalPolicy } from "../src/domain/policy.js";
 import { TeamLedger } from "../src/domain/team-ledger.js";
 import type { Observation, TaskFields } from "../src/domain/types.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { testStore } from "./helpers/test-store.js";
 
 const taskFields: TaskFields = {
 	externalRef: "notion:task:ACME-42",
@@ -22,7 +22,7 @@ const taskFields: TaskFields = {
 };
 
 async function system() {
-	const store = new MemoryLedgerStore();
+	const store = await testStore();
 	const ledger = new TeamLedger(
 		store,
 		new ProposalPolicy({

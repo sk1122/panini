@@ -3,12 +3,12 @@ import { ProposalPolicy } from "../src/domain/policy.js";
 import { TeamLedger } from "../src/domain/team-ledger.js";
 import { projectionOutboxHandlers } from "../src/outbox/projection-handler.js";
 import { OutboxDispatcher, OutboxQueue } from "../src/outbox/runtime.js";
-import { MemoryLedgerStore } from "../src/store/memory.js";
+import { testStore } from "./helpers/test-store.js";
 
 const quietLog = { info: vi.fn(), error: vi.fn() };
 
 function dispatcher(
-	store: MemoryLedgerStore,
+	store: Awaited<ReturnType<typeof testStore>>,
 	handlers = projectionOutboxHandlers(store),
 	maxAttempts = 3,
 ) {
@@ -27,7 +27,7 @@ function dispatcher(
 
 describe("OutboxDispatcher", () => {
 	it("verifies accepted projections before completing their durable jobs", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ledger = new TeamLedger(
 			store,
 			new ProposalPolicy({
@@ -54,7 +54,7 @@ describe("OutboxDispatcher", () => {
 	});
 
 	it("retries handler failures and dead-letters exhausted jobs", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const queue = new OutboxQueue(store);
 
 		await queue.enqueue("test.failure", "test-failure:one", { safe: true });
@@ -85,7 +85,7 @@ describe("OutboxDispatcher", () => {
 	});
 
 	it("verifies a persisted escalation as a completed proposal decision", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const ledger = new TeamLedger(
 			store,
 			new ProposalPolicy({
@@ -123,7 +123,7 @@ describe("OutboxDispatcher", () => {
 	});
 
 	it("deduplicates explicitly queued operations", async () => {
-		const store = new MemoryLedgerStore();
+		const store = await testStore();
 		const queue = new OutboxQueue(store);
 		const first = await queue.enqueue(
 			"connector.sync",

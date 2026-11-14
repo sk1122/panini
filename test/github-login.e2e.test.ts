@@ -7,8 +7,6 @@ import { migrate } from "../src/db/migrate.js";
 import { PostgresLedgerStore } from "../src/store/postgres.js";
 import { TeamLedger } from "../src/domain/team-ledger.js";
 import { ProposalPolicy } from "../src/domain/policy.js";
-import { EvidenceIntelligence } from "../src/intelligence/engine.js";
-import { AutonomousAdjudicator } from "../src/adjudication/engine.js";
 import { OutboxQueue } from "../src/outbox/runtime.js";
 import { ReplayVerifier } from "../src/replay/verifier.js";
 import { IdentityService } from "../src/security/identity.js";
@@ -117,34 +115,11 @@ suite("GitHub login with real PostgreSQL and fixture provider", () => {
 			new ProposalPolicy(config.app.policy),
 		);
 		const identity = new IdentityService(databaseUrl!, id);
-		const log = { info() {}, error() {} };
-		const intelligence = new EvidenceIntelligence({
-			store,
-			ledger,
-			interpreter: null,
-			companyName: "Test",
-			config: config.app.intelligence,
-			log,
-		});
-		const adjudicator = new AutonomousAdjudicator({
-			store,
-			ledger,
-			provider: null,
-			companyName: "Test",
-			config: config.app.adjudication,
-			completionPolicy: {
-				minimumEvidenceItems: 2,
-				evidenceProviders: ["agent"],
-			},
-			log,
-		});
 		const app = await buildHttpServer({
 			config,
 			ledger,
 			identity,
 			githubAppClient,
-			intelligence,
-			adjudicator,
 			jobs: new OutboxQueue(store),
 			replay: new ReplayVerifier(store),
 		});
@@ -577,7 +552,7 @@ suite("GitHub login with real PostgreSQL and fixture provider", () => {
 				await page
 					.getByRole("button", { name: "Finish setup", exact: true })
 					.click();
-				await page.waitForURL("**/app/projects");
+				await page.waitForURL("**/app/home");
 				await page.goto(`${origin}/app/settings`);
 				await page
 					.getByText("Connected as fixture-user.", { exact: false })

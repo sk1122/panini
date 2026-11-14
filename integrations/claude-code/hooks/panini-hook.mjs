@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { pantryConnection } from "./panini-token.mjs";
 
+// Never block Claude: every failure path exits 0 quietly.
 const chunks = [];
 let size = 0;
 
@@ -21,46 +23,116 @@ try {
 }
 
 const event = String(input.hook_event_name || "Unknown");
-const mapping = {
-	SessionStart: ["started", "Claude Code session started."],
-	TaskCompleted: ["delivered", "Claude Code reported a task checkpoint."],
-	StopFailure: ["failed", "Claude Code reported a failed stop."],
-	SessionEnd: ["checkpoint", "Claude Code session ended."],
-};
-const selected = mapping[event];
 
-if (!selected) process.exit(0);
+function connection() {
+	return pantryConnection();
+}
 
-const stableReceiptMaterial = JSON.stringify({
-	event,
-	sessionId: input.session_id || null,
-	taskId: input.task_id || null,
-	toolUseId: input.tool_use_id || null,
-	stopReason: input.stop_reason || null,
-});
-const reportId = `claude-hook-${createHash("sha256").update(stableReceiptMaterial).digest("hex")}`;
-const report = {
-	reportId,
-	workItemId: process.env.PANINI_TASK_ID || null,
-	phase: selected[0],
-	outcome: selected[1],
-	artifactRefs: [],
-	verification: [],
-	occurredAt: new Date().toISOString(),
-};
+function git(args) {
+	const result = spawnSync("git", args, {
+		cwd: input.cwd || process.cwd(),
+		encoding: "utf8",
+		timeout: 1_000,
+		stdio: ["ignore", "pipe", "ignore"],
+	});
 
-const relay = process.env.PANINI_RELAY_BIN || "panini-relay";
-const result = spawnSync(relay, ["enqueue", "--report", "-"], {
-	input: JSON.stringify(report),
-	encoding: "utf8",
-	timeout: 4_000,
-	stdio: ["pipe", "ignore", "pipe"],
-	shell: false,
-});
+	return result.status === 0 ? result.stdout.trim() : null;
+}
 
-if (result.error || result.status !== 0) {
+function repository() {
+	const remote = git(["remote", "get-url", "origin"]);
+	const match = remote && /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
+
+	return match ? match[1] : null;
+}
+
+const lifecycle = {
+	SessionStart: "session_start",
+	SessionEnd: "session_end",
+	StopFailure: "session_failed",
+}[event];
+const target = connection();
+
+if (lifecycle && target && input.session_id) {
+	try {
+		const response = await fetch(
+			new URL("/api/agent/hooks", target.url).href,
+			{
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${target.token}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					event: lifecycle,
+					clientSessionId: String(input.session_id).slice(0, 200),
+					harness: "claude_code",
+					...(repository() ? { repository: repository() } : {}),
+					...(git(["branch", "--show-current"])
+						? { branch: git(["branch", "--show-current"]) }
+						: {}),
+				}),
+				signal: AbortSignal.timeout(3_000),
+			},
+		);
+
+		if (response.ok && lifecycle === "session_start") {
+			const body = await response.json();
+
+			// SessionStart may add context: the session's claims, last handoff and team notes.
+			if (body.brief)
+				process.stdout.write(
+					JSON.stringify({
+						hookSpecificOutput: {
+							hookEventName: "SessionStart",
+							additionalContext: `Panini: ${body.brief}`,
+						},
+					}),
+				);
+		}
+	} catch {
+		process.stderr.write(
+			"Panini was unreachable; Claude work was not blocked.\n",
+		);
+	}
+	process.exit(0);
+}
+
+// Task checkpoints keep using the signed, offline-capable relay.
+if (event !== "TaskCompleted") process.exit(0);
+
+const reportId = `claude-hook-${createHash("sha256")
+	.update(
+		JSON.stringify({
+			event,
+			sessionId: input.session_id || null,
+			taskId: input.task_id || null,
+			toolUseId: input.tool_use_id || null,
+		}),
+	)
+	.digest("hex")}`;
+const result = spawnSync(
+	process.env.PANINI_RELAY_BIN || "panini-relay",
+	["enqueue", "--report", "-"],
+	{
+		input: JSON.stringify({
+			reportId,
+			workItemId: process.env.PANINI_TASK_ID || null,
+			phase: "delivered",
+			outcome: "Claude Code reported a task checkpoint.",
+			artifactRefs: [],
+			verification: [],
+			occurredAt: new Date().toISOString(),
+		}),
+		encoding: "utf8",
+		timeout: 4_000,
+		stdio: ["pipe", "ignore", "pipe"],
+		shell: false,
+	},
+);
+
+if (result.error || result.status !== 0)
 	process.stderr.write(
 		"Panini relay did not accept the metadata-only hook receipt; Claude work was not blocked.\n",
 	);
-}
 process.exit(0);
