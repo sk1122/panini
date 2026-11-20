@@ -1,3 +1,4 @@
+import { batchEvents } from "./batch-agent.js";
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import type { LedgerStore } from "../domain/store.js";
@@ -195,6 +196,8 @@ export async function runReconcile(input: {
 	trigger: ReconcileTrigger;
 	allowedVisibilities: readonly string[];
 	observe: (eventId: string) => Promise<{ state: string }>;
+	/** Handles a whole batch of messages at once; replaces per-message handling. */
+	observeBatch?: (events: SourceEvent[]) => Promise<void>;
 	/** How many threads run at once (PANINI_RECONCILE_CONCURRENCY, default 3). */
 	concurrency?: number;
 	deliverDigest?: (markdown: string) => Promise<void>;
@@ -219,6 +222,28 @@ export async function runReconcile(input: {
 			// Events that arrive during the run wait for the next run.
 			const window = page.filter((event) => event.receivedAt <= started);
 			const threads = new Map<string, SourceEvent[]>();
+
+			if (input.observeBatch) {
+				const readable = window.filter((event) => {
+					const wanted = needsModel(event, input.allowedVisibilities);
+
+					if (!wanted) run.skipped += 1;
+					return wanted;
+				});
+
+				// One batch after another, so each sees what the last one wrote.
+				for (const batch of batchEvents(readable)) {
+					await input.observeBatch(batch);
+					run.processed += batch.length;
+				}
+
+				const end = window.at(-1);
+
+				if (end)
+					run.cursor = { receivedAt: end.receivedAt, id: end.id };
+				if (page.length < 100 || window.length < page.length) break;
+				continue;
+			}
 
 			for (const event of window) {
 				if (!needsModel(event, input.allowedVisibilities)) {

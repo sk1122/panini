@@ -1,3 +1,4 @@
+import { runBatch } from "./reconcile/batch-agent.js";
 import { extractSessionDecisions } from "./decisions/from-session.js";
 import {
 	claudeFetcher,
@@ -560,12 +561,59 @@ handlers.set("reconcile.run", async (job) => {
 			: "schedule";
 	const webhook = process.env.PANINI_DIGEST_WEBHOOK_URL;
 
+	// A model chosen in the app runs in batches; a model set in the server's
+	// environment keeps the per-message agent.
+	const settings = await store.modelSettings?.get();
+	const price = settings ? priceBasisFor(settings.model) : null;
+	const observeBatch =
+		settings && price && store.decisions
+			? (events: Parameters<typeof runBatch>[1]) =>
+					runBatch(
+						{
+							store,
+							ledger,
+							model: settings.model,
+							apiKey: settings.apiKey,
+							fetcher: isClaudeModel(settings.model)
+								? claudeFetcher(settings.apiKey)
+								: fetch,
+							charge: async (usage) => {
+								await store.decisions!.chargeBudget(
+									observer.budgetId,
+									settledCost(
+										usage.inputTokens,
+										usage.cachedInputTokens,
+										usage.outputTokens,
+										price,
+									) ?? "0",
+									usage.inputTokens,
+									usage.outputTokens,
+								);
+								return (
+									(
+										await store.getInferenceBudget(
+											observer.budgetId,
+										)
+									)?.state === "active"
+								);
+							},
+						},
+						events,
+					).then((result) =>
+						log.info("Batch handled.", {
+							events: events.length,
+							...result,
+						}),
+					)
+			: undefined;
+
 	await runReconcile({
 		store,
 		runs: store.reconcileRuns,
 		ledger,
 		trigger,
 		allowedVisibilities,
+		...(observeBatch ? { observeBatch } : {}),
 		observe: (eventId) =>
 			observer.agent.run({ eventId, budgetId: observer.budgetId }),
 		concurrency: Math.max(
