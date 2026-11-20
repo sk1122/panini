@@ -37,7 +37,7 @@ function renderContextFilters() {
 					'<option value="' +
 					esc(task.id) +
 					'">' +
-					esc(task.title) +
+					esc(cleanTitle(task.title)) +
 					"</option>",
 			)
 			.join("");
@@ -80,6 +80,25 @@ function filteredNodes(nodes, query) {
 	});
 }
 
+/** A readable name: no Slack IDs, timestamps, dates or file extensions. */
+function displayName(name) {
+	if (/^[CG][A-Z0-9]{8,}$/.test(name)) return "Slack channel";
+	if (/^thread-\d/.test(name)) return "Thread";
+	if (/^unscoped-reports?$/i.test(name)) return "Reports";
+
+	const clean = String(name)
+		.replace(/\.md$/i, "")
+		.replace(/\bslack-?[CG][A-Z0-9]{6,}\b/gi, "")
+		.replace(/\b(thread-)?\d{9,}(\.\d+)?\b/g, "")
+		.replace(/\b\d{4}-\d{2}-\d{2}\b/g, "")
+		.replace(/\bunscoped(-reports?)?\b/gi, "")
+		.replace(/[-_]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+
+	return clean ? clean[0].toUpperCase() + clean.slice(1) : String(name);
+}
+
 function treeMarkup(nodes) {
 	return nodes
 		.map((node) => {
@@ -105,14 +124,18 @@ function treeMarkup(nodes) {
 				action +
 				'><i class="ph ph-' +
 				glyph +
-				' tree-glyph" aria-hidden="true"></i><strong>' +
-				esc(node.name) +
+				' tree-glyph" aria-hidden="true"></i><strong title="' +
+				esc(node.path) +
+				'">' +
+				esc(displayName(node.name)) +
 				'</strong><small class="' +
 				esc(folder ? "" : "memory-state " + node.lifecycleState) +
 				'">' +
 				(folder
 					? String(node.children.length)
-					: esc(node.lifecycleState.replaceAll("_", " "))) +
+					: node.lifecycleState === "accepted"
+						? ""
+						: esc(node.lifecycleState.replaceAll("_", " "))) +
 				"</small></button>";
 
 			return (
@@ -971,6 +994,7 @@ const harnessLabels = {
 	hermes: "Hermes Agent",
 	pi: "Pi",
 	generic_mcp: "Other MCP",
+	chatgpt: "MCP app",
 };
 const harnessIcons = {
 	codex: "terminal-window",
@@ -978,6 +1002,7 @@ const harnessIcons = {
 	hermes: "lightning",
 	pi: "pi",
 	generic_mcp: "plugs-connected",
+	chatgpt: "chat-circle",
 };
 const capabilityLabels = {
 	"work:read": "Read work",

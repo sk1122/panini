@@ -132,8 +132,12 @@ describe("SlackSocketSupervisor", () => {
 
 		first.start();
 		second.start();
-		await vi.advanceTimersByTimeAsync(0);
-		expect(firstConnections).toBe(1);
+		// The lease is a real database call, so wait for it rather than one timer tick.
+		await vi.waitFor(async () => {
+			await vi.advanceTimersByTimeAsync(0);
+			expect(firstConnections).toBe(1);
+		});
+		await vi.advanceTimersByTimeAsync(300);
 		expect(secondConnections).toBe(0);
 
 		first.stop();

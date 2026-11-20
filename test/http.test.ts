@@ -1050,10 +1050,23 @@ describe("HTTP server", () => {
 			.join("\n");
 
 		expect(codexSetup).toContain("codex mcp add");
-		expect(codexSetup).toContain(
-			'http_headers = { Authorization = "Bearer ' +
-				first.json().secret +
-				'" }',
+		// Apps that take only a URL get the secret inside the MCP URL.
+		expect(codexSetup).toContain(`/mcp/k/${first.json().secret}"`);
+
+		const viaUrl = async (secret: string) =>
+			app.inject({
+				method: "POST",
+				url: `/mcp/k/${secret}`,
+				headers: {
+					"content-type": "application/json",
+					accept: "application/json, text/event-stream",
+				},
+				payload: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+			});
+
+		expect((await viaUrl(first.json().secret)).statusCode).toBe(200);
+		expect((await viaUrl("tl_agent_not-a-real-secret")).statusCode).toBe(
+			401,
 		);
 
 		const unauthorized = await callMcp(app, null, "work_search");

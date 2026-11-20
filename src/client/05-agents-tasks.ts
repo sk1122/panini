@@ -78,6 +78,8 @@ function renderIntegrations() {
 		? state.workspace.connectorSyncs || []
 		: [];
 
+	if (byId("view-integrations").classList.contains("active"))
+		void loadConnectSources().catch(() => undefined);
 	byId("integration-count").textContent = String(installations.length);
 	byId("integrations").innerHTML =
 		installations
@@ -233,72 +235,134 @@ async function openTaskDetail(id) {
 	renderTaskDetail({ ...detail, workModel, ledger });
 }
 
-function renderTaskLedger(task, ledger) {
-	if (!ledger) return "";
+function renderTaskDetail(detail) {
+	const task = detail.task;
+	const ledger = detail.ledger;
+	const model = detail.workModel;
+	const labels = {
+		status: "Status",
+		owner: "Owner",
+		project: "Project",
+		title: "Title",
+		description: "Description",
+		dueDate: "Due date",
+		priority: "Priority",
+	};
+	const events = [];
 
-	const claims = ledger.claims
+	// One timeline: what changed, what agents reported, handoffs and linked activity.
+	for (const revision of detail.revisions) {
+		const changed = revision.previous
+			? Object.entries(labels)
+					.filter(
+						([key]) =>
+							JSON.stringify(revision.current[key]) !==
+							JSON.stringify(revision.previous[key]),
+					)
+					.map(([key, label]) =>
+						key === "description"
+							? "Description updated"
+							: label +
+								": " +
+								changeValue(revision.previous[key]) +
+								" → " +
+								changeValue(revision.current[key]),
+					)
+			: ["Created"];
+
+		events.push({
+			at: revision.appliedAt,
+			icon: revision.previous ? "pencil-simple" : "plus-circle",
+			text: esc(changed.join(" · ") || "Details changed"),
+			by: recordedBy(revision.appliedBy),
+		});
+	}
+	for (const item of model?.evidence ?? []) {
+		const claim = item.claim.body;
+		const sourceId = claim.spans[0]?.eventId;
+
+		events.push({
+			at: claim.assertedAt,
+			icon: item.entity.kind === "execution" ? "play-circle" : "package",
+			text:
+				"<strong>" +
+				esc(item.entity.name) +
+				"</strong> " +
+				esc(claim.statement),
+			by: "Reported",
+			action: sourceId
+				? '<button class="button quiet small" data-work-source="' +
+					esc(sourceId) +
+					'">Source</button>'
+				: "",
+		});
+	}
+	for (const handoff of ledger?.handoffs ?? [])
+		events.push({
+			at: handoff.createdAt,
+			icon: "hand-arrow-right",
+			text:
+				"Handoff" +
+				(handoff.nextStep ? ": " + esc(handoff.nextStep) : ""),
+			by: handoff.author.split(":").slice(2).join(":") || handoff.author,
+		});
+	for (const item of detail.activityCandidates || [])
+		events.push({
+			at: item.occurredAt,
+			icon: "link-simple",
+			text:
+				esc(item.eventKind.replaceAll("_", " ")) +
+				" · " +
+				(item.sourceUrl && item.sourceUrl.startsWith("https://")
+					? '<a href="' +
+						esc(item.sourceUrl) +
+						'" target="_blank" rel="noreferrer">' +
+						esc(item.sourceRef) +
+						"</a>"
+					: esc(item.sourceRef)),
+			by: "Linked activity",
+		});
+	for (const proposal of detail.proposals.filter(
+		(item) => item.state === "pending",
+	))
+		events.push({
+			at: proposal.createdAt,
+			icon: "hourglass-medium",
+			text: "Waiting: " + esc(Object.keys(proposal.changes).join(", ")),
+			by: who(proposal.rationale),
+		});
+	events.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+
+	const timeline = events
 		.map(
-			(claim) =>
-				'<div class="activity-row"><strong><span class="session-dot active"></span>' +
-				esc(claim.agentName || "Agent") +
-				" <small>" +
-				esc(claim.owner || "") +
-				"</small></strong><span>" +
-				(claim.inferred ? "inferred from branch · " : "") +
-				"since " +
-				esc(formatDate(claim.claimedAt)) +
-				"</span><time>until " +
-				esc(formatDate(claim.expiresAt)) +
-				"</time></div>",
+			(event) =>
+				'<li><span class="tl-icon"><i class="ph ph-' +
+				event.icon +
+				'" aria-hidden="true"></i></span><div><p>' +
+				event.text +
+				"</p><small>" +
+				esc(event.by) +
+				" · " +
+				esc(formatDate(event.at)) +
+				"</small></div>" +
+				(event.action || "") +
+				"</li>",
 		)
 		.join("");
-	const handoff = ledger.handoffs[0];
-	const handoffView = handoff
-		? '<dl class="handoff-note"><div><dt>Done</dt><dd>' +
-			esc(handoff.done || "-") +
-			"</dd></div><div><dt>Not done</dt><dd>" +
-			esc(handoff.notDone || "-") +
-			"</dd></div><div><dt>Open questions</dt><dd>" +
-			esc(handoff.openQuestions || "-") +
-			"</dd></div><div><dt>Next step</dt><dd>" +
-			esc(handoff.nextStep || "-") +
-			"</dd></div>" +
-			(handoff.artifacts.length
-				? "<div><dt>Artifacts</dt><dd>" +
-					handoff.artifacts.map(esc).join("<br>") +
-					"</dd></div>"
-				: "") +
-			'</dl><p class="handoff-meta">By ' +
-			esc(
-				handoff.author.split(":").slice(2).join(":") || handoff.author,
-			) +
-			" · " +
-			esc(formatDate(handoff.createdAt)) +
-			"</p>"
-		: '<div class="empty"><span>No handoff note yet.</span></div>';
 
-	return (
-		'<div class="section-head compact-head"><div><h2>Who is working on it</h2><p>Agent claims are advisory and expire after two hours without activity.</p></div>' +
-		(claims && canReview()
-			? '<button class="button quiet small" data-clear-claims="' +
-				esc(task.id) +
-				'">Clear claims</button>'
-			: "") +
-		"</div>" +
-		'<div class="activity-list">' +
-		(claims ||
-			'<div class="empty"><span>No agent holds this task.</span></div>') +
-		"</div>" +
-		'<div class="section-head compact-head"><div><h2>Latest handoff</h2><p>What the last agent or person left for the next one.</p></div></div>' +
-		handoffView
-	);
-}
-
-function renderWorkModel(model) {
-	if (!model) return "";
-
-	const scope = model.scope;
-	const current = model.assessments
+	const claims = (ledger?.claims ?? [])
+		.map(
+			(claim) =>
+				'<span class="live-chip"><i class="ph ph-robot" aria-hidden="true"></i>' +
+				esc(claim.agentName || "Agent") +
+				"<small>since " +
+				esc(formatDate(claim.claimedAt)) +
+				"</small></span>",
+		)
+		.join("");
+	const handoff = ledger?.handoffs?.[0];
+	const scope = model?.scope;
+	const current = model?.assessments
 		.slice()
 		.reverse()
 		.find(
@@ -306,345 +370,115 @@ function renderWorkModel(model) {
 				item.appliedVersion === model.task.version &&
 				item.scopeId === scope?.id,
 		);
-	const labels = {
-		yes: "Reported performed",
-		no: "Not performed",
-		uncertain: "Not established",
-		conflicting: "Conflicting reports",
-	};
-	const requirements = scope
-		? '<ol class="work-requirements">' +
-			scope.requiredSteps
+	const steps = scope
+		? scope.requiredSteps
 				.map((step) => {
-					const assessment = current?.assessment.requirements.find(
+					const performed = current?.assessment.requirements.find(
 						(item) => item.id === step.id,
-					);
+					)?.performed;
 
 					return (
-						"<li><strong>" +
+						'<li class="' +
+						(performed === "yes" ? "done" : "") +
+						'"><i class="ph' +
+						(performed === "yes"
+							? "-fill ph-check-circle"
+							: " ph-circle") +
+						'" aria-hidden="true"></i>' +
 						esc(step.description) +
-						"</strong><small>" +
-						esc(
-							assessment
-								? labels[assessment.performed]
-								: "Not assessed for the current task version",
-						) +
-						"</small><details><summary>Scope evidence</summary><blockquote>" +
-						esc(step.quote) +
-						"</blockquote></details></li>"
+						"</li>"
 					);
 				})
-				.join("") +
-			'</ol><p class="muted-copy">Inferred scope. A scope change needs verified authority.</p>'
-		: '<p class="muted-copy">No inferred scope has been recorded for this task.</p>';
-	const evidence = model.evidence
-		.map((item) => {
-			const claim = item.claim.body;
-			const sourceId = claim.spans[0]?.eventId;
-			const reference =
-				item.entity.externalRef &&
-				/^https?:\/\//i.test(item.entity.externalRef)
-					? '<a href="' +
-						esc(item.entity.externalRef) +
-						'" target="_blank" rel="noreferrer">Open artifact</a>'
-					: "";
-
-			return (
-				'<article class="work-evidence"><header><strong>' +
-				esc(item.entity.name) +
-				"</strong><span>" +
-				esc(item.entity.kind === "execution" ? "Attempt" : "Artifact") +
-				"</span></header><p>" +
-				esc(claim.statement) +
-				"</p><small>Source report · " +
-				esc(claim.assertedValue?.result || "unknown") +
-				" · " +
-				esc(formatDate(claim.assertedAt)) +
-				"</small><small>Task link: " +
-				esc(item.relationship) +
-				" · inferred by model</small>" +
-				(item.entity.revision
-					? "<small>Revision: " +
-						esc(item.entity.revision) +
-						"</small>"
-					: "") +
-				(item.entity.environment
-					? "<small>Environment: " +
-						esc(item.entity.environment) +
-						"</small>"
-					: "") +
-				'<div class="agent-grants">' +
-				(sourceId
-					? '<button class="button quiet small" data-work-source="' +
-						esc(sourceId) +
-						'">Read source</button>'
-					: "") +
-				reference +
-				"</div></article>"
-			);
-		})
-		.join("");
-
-	return (
-		'<section class="work-model" aria-label="Work model"><div class="section-head compact-head"><div><h2>Requested work</h2><p>Original requirements and the latest accepted assessment.</p></div></div>' +
-		requirements +
-		'<div class="section-head compact-head"><div><h2>Attempts and outputs</h2><p>Reports and inferred links are not independent verification.</p></div></div>' +
-		(evidence ||
-			'<p class="muted-copy">No linked attempts or artifacts recorded.</p>') +
-		(model.evidence.length === 100
-			? '<p class="muted-copy">Showing up to 100 records. More evidence may exist.</p>'
-			: "") +
-		"</section>"
-	);
-}
-
-function renderTaskDetail(detail) {
-	const task = detail.task;
-	const revisions = detail.revisions
-		.slice()
-		.reverse()
-		.map((revision) => {
-			const labels = {
-				status: "Status",
-				owner: "Owner",
-				project: "Project",
-				title: "Title",
-				description: "Description",
-				dueDate: "Due date",
-				priority: "Priority",
-			};
-			const changed = revision.previous
-				? Object.entries(labels)
-						.filter(
-							([key]) =>
-								JSON.stringify(revision.current[key]) !==
-								JSON.stringify(revision.previous[key]),
-						)
-						.map(
-							([key, label]) =>
-								label +
-								": " +
-								changeValue(revision.previous[key]) +
-								" → " +
-								changeValue(revision.current[key]),
-						)
-				: ["First recorded"];
-			const proposal = detail.proposals.find(
-				(item) => item.id === revision.proposalId,
-			);
-
-			return (
-				'<div class="knowledge-change"><time>' +
-				esc(formatDate(revision.appliedAt)) +
-				"</time><strong>" +
-				esc(changed.join(" · ") || "Other details changed") +
-				"</strong><small>Recorded by " +
-				esc(recordedBy(revision.appliedBy)) +
-				"</small>" +
-				(proposal?.rationale
-					? "<p>Recorded note: " +
-						esc(who(proposal.rationale)) +
-						"</p>"
-					: "") +
-				"</div>"
-			);
-		})
-		.join("");
-	const pending = detail.proposals
-		.filter((proposal) => proposal.state === "pending")
-		.map(
-			(proposal) =>
-				'<div class="activity-row pending-row"><strong>Pending ' +
-				esc(proposal.kind.replaceAll("_", " ")) +
-				"</strong><span>" +
-				esc(Object.keys(proposal.changes).join(", ")) +
-				" · " +
-				esc(proposal.rationale) +
-				"</span><time>Base v" +
-				esc(proposal.baseVersion || "new") +
-				"</time></div>",
-		)
-		.join("");
-	const evidence = detail.evidence
-		.map(
-			(item) =>
-				'<div class="activity-row"><strong>' +
-				esc(item.provider + " · " + item.eventKind) +
-				"</strong><span>" +
-				esc(item.sourceRef) +
-				"</span><time>" +
-				esc(formatDate(item.occurredAt)) +
-				"</time></div>",
-		)
-		.join("");
-	const activity = (detail.activityCandidates || [])
-		.map(
-			(item) =>
-				'<div class="activity-row"><strong>' +
-				esc(item.eventKind.replaceAll("_", " ")) +
-				"</strong><span>" +
-				(item.sourceUrl && item.sourceUrl.startsWith("https://")
-					? '<a href="' +
-						esc(item.sourceUrl) +
-						'" target="_blank" rel="noreferrer">' +
-						esc(item.sourceRef) +
-						"</a>"
-					: esc(item.sourceRef)) +
-				"</span><time>" +
-				esc(formatDate(item.occurredAt)) +
-				"</time></div>",
-		)
-		.join("");
-	const coverage = detail.activityCoverage || { bounded: false, scanned: 0 };
-	const dependencies = task.dependencyRefs.length
-		? task.dependencyRefs.map(dependencyName).join(", ")
-		: "None";
+				.join("")
+		: "";
 	const canUndo =
 		canReview() &&
 		detail.allowedActions.find(
 			(action) => action.action === "undo" && action.allowed,
 		);
-	const contract = task.outcomeContract;
-	const contractView = contract
-		? "<p>" +
-			esc(contract.statement) +
-			"</p><p><strong>Scope:</strong> " +
-			esc(contract.scope) +
-			"</p>" +
-			(contract.exclusions.length
-				? "<p><strong>Exclusions:</strong> " +
-					esc(contract.exclusions.join("; ")) +
-					"</p>"
-				: "") +
-			'<div class="activity-list">' +
-			contract.criteria
-				.map(
-					(criterion) =>
-						'<div class="activity-row"><strong>' +
-						esc(criterion.description) +
-						"</strong><span>" +
-						esc(criterion.required ? "Required" : "Optional") +
-						" · " +
-						esc(criterion.evidenceRule.kind.replaceAll("_", " ")) +
-						(criterion.evidenceRule.artifactRefs.length
-							? " · " +
-								esc(
-									criterion.evidenceRule.artifactRefs.join(
-										", ",
-									),
-								)
-							: "") +
-						"</span></div>",
-				)
-				.join("") +
-			"</div><small>Accepted " +
-			esc(formatDate(contract.provenance.acceptedAt)) +
-			" by " +
-			esc(recordedBy(contract.provenance.actor)) +
-			" · v" +
-			esc(contract.version) +
-			"</small>"
-		: '<p class="muted-copy">No reviewer-approved outcome contract. Inferred scope and evidence checks still apply.</p>';
-	const contractDraft = canReview()
-		? '<details class="source-details"><summary>Propose an outcome contract</summary>' +
-			'<form id="outcome-contract-form" class="settings-form" data-task-id="' +
-			esc(task.id) +
-			'" data-task-version="' +
-			esc(task.version) +
-			'">' +
-			'<div class="field"><label>Outcome statement</label><textarea name="statement" required maxlength="5000">' +
-			esc(contract?.statement || "") +
-			"</textarea></div>" +
-			'<div class="field"><label>Scope</label><textarea name="scope" required maxlength="5000">' +
-			esc(contract?.scope || "") +
-			"</textarea></div>" +
-			'<div class="field"><label>Exclusions, one per line</label><textarea name="exclusions">' +
-			esc(contract?.exclusions.join("\n") || "") +
-			"</textarea></div>" +
-			'<div class="field"><label>Criteria JSON</label><textarea name="criteria" required rows="8">' +
-			esc(
-				JSON.stringify(
-					contract?.criteria.map((item) => ({
-						id: item.id,
-						description: item.description,
-						required: item.required,
-						evidenceRule: item.evidenceRule,
-					})) || [],
-					null,
-					2,
-				),
-			) +
-			"</textarea><small>Each criterion needs an id, description, required flag, and evidenceRule. For GitHub merge or deployment checks, include the pull URL and exact 40-character SHA in artifactRefs.</small></div>" +
-			'<div class="field"><label>Reason for this contract</label><textarea name="rationale" required maxlength="2000"></textarea></div>' +
-			'<button class="button primary" type="submit">Send for review</button></form></details>'
-		: "";
+	const meta = [
+		["user", task.owner || "No owner"],
+		["folder-simple", task.project || "No project"],
+		["flag", task.priority],
+		task.dueDate
+			? ["calendar-blank", formatDate(task.dueDate, false)]
+			: null,
+		task.dependencyRefs.length
+			? ["git-branch", task.dependencyRefs.map(dependencyName).join(", ")]
+			: null,
+	]
+		.filter(Boolean)
+		.map(
+			([icon, value]) =>
+				'<span><i class="ph ph-' +
+				icon +
+				'" aria-hidden="true"></i>' +
+				esc(value) +
+				"</span>",
+		)
+		.join("");
 
 	byId("task-detail-content").innerHTML =
-		'<div class="detail-head"><div><h2>' +
-		esc(task.title) +
-		"</h2><p>" +
-		esc(
-			task.description && task.description.length <= 400
-				? task.description
-				: "Requirements and evidence are shown below.",
-		) +
-		'</p></div><span class="detail-state">' +
-		esc(task.status.replaceAll("_", " ")) +
-		"</span></div>" +
-		'<div class="detail-grid"><div><small>Result</small><span>' +
-		esc(task.result || "unknown") +
-		"</span></div><div><small>Owner</small><span>" +
-		esc(task.owner || "Unassigned") +
-		"</span></div><div><small>Project</small><span>" +
-		esc(task.project || "No project") +
-		"</span></div><div><small>Last changed</small><span>" +
-		esc(formatDate(task.updatedAt)) +
-		"</span></div><div><small>Priority</small><span>" +
-		esc(task.priority) +
-		"</span></div><div><small>Dependencies</small><span>" +
-		esc(dependencies) +
-		"</span></div><div><small>Source</small><span>" +
+		'<header class="td-head"><span class="pill ' +
+		esc(task.status) +
+		'">' +
+		esc(statusLabel(task.status)) +
+		"</span><h2>" +
+		esc(cleanTitle(task.title)) +
+		'</h2><div class="td-meta">' +
+		meta +
 		(task.sourceUrl
 			? '<a href="' +
 				esc(task.sourceUrl) +
-				'" target="_blank" rel="noreferrer">Open original</a>'
-			: "Added in Panini") +
-		"</span></div></div>" +
-		(task.description && task.description.length > 400
-			? '<details class="source-details"><summary>Full task description</summary><p class="task-description">' +
-				esc(task.description) +
-				"</p></details>"
+				'" target="_blank" rel="noreferrer"><i class="ph ph-arrow-square-out" aria-hidden="true"></i>Source</a>'
 			: "") +
-		renderTaskLedger(task, detail.ledger) +
-		renderWorkModel(detail.workModel) +
-		'<div class="section-head compact-head"><div><h2>Outcome contract</h2><p>Accepted scope and proof needed for completion.</p></div></div>' +
-		contractView +
-		contractDraft +
-		(pending
-			? '<div class="section-head compact-head"><div><h2>Changes under review</h2><p>The current task has not changed yet.</p></div></div><div class="activity-list">' +
-				pending +
+		"</div></header>" +
+		(claims
+			? '<div class="td-live">' +
+				claims +
+				(canReview()
+					? '<button class="button quiet small" data-clear-claims="' +
+						esc(task.id) +
+						'">Clear</button>'
+					: "") +
 				"</div>"
 			: "") +
-		'<div class="section-head compact-head"><div><h2>Possible linked activity</h2><p>Reference matches are clues. They do not change accepted status.</p></div></div><div class="activity-list">' +
-		(activity ||
-			'<div class="empty"><span>No activity with an exact task reference found.</span></div>') +
-		"</div>" +
-		(coverage.bounded
-			? '<p class="muted-copy">Recent event window reached its limit; older activity may be missing.</p>'
+		(task.description
+			? '<p class="td-description">' + esc(task.description) + "</p>"
 			: "") +
-		'<div class="section-head"><div><h2>How this task changed</h2></div>' +
+		(handoff
+			? '<section class="td-block"><h3>Latest handoff</h3><dl class="td-handoff">' +
+				[
+					["Done", handoff.done],
+					["Not done", handoff.notDone],
+					["Next", handoff.nextStep],
+				]
+					.filter(([, value]) => value)
+					.map(
+						([label, value]) =>
+							"<div><dt>" +
+							label +
+							"</dt><dd>" +
+							esc(value) +
+							"</dd></div>",
+					)
+					.join("") +
+				"</dl></section>"
+			: "") +
+		(steps
+			? '<section class="td-block"><h3>Steps</h3><ul class="td-steps">' +
+				steps +
+				"</ul></section>"
+			: "") +
+		'<section class="td-block"><header><h3>Timeline</h3>' +
 		(canUndo
-			? '<button class="button danger small" data-task-undo="' +
+			? '<button class="button quiet small" data-task-undo="' +
 				esc(task.id) +
-				'">Undo latest</button>'
+				'">Undo latest change</button>'
 			: "") +
-		'</div><div class="knowledge-history">' +
-		revisions +
-		"</div>" +
-		'<details class="source-details"><summary>View sources</summary><div class="activity-list">' +
-		(evidence ||
-			'<div class="empty"><span>No source receipts recorded.</span></div>') +
-		"</div></details>";
+		'</header><ol class="td-timeline">' +
+		(timeline || '<li class="tl-empty">Nothing yet.</li>') +
+		"</ol></section>";
 	byId("task-detail-dialog").showModal();
 }
 
@@ -768,3 +602,206 @@ function renderSummary() {
 
 	byId("analyze").hidden = !intelligenceEnabled;
 }
+
+// Connect buttons for Slack, GitHub and Notion. Each install creates its own
+// apps; credentials are stored encrypted and never sent back to the page.
+/** Reads the repositories chosen on GitHub and starts syncing them. */
+async function syncGithubRepositories() {
+	const status = byId("github-repos-status");
+
+	if (status) status.textContent = "Reading your repositories from GitHub…";
+	try {
+		const result = await api("/api/integrations/github/repositories", {
+			method: "POST",
+			body: "{}",
+		});
+		const names = result.connected.flatMap((item) => item.repositories);
+
+		if (status)
+			status.textContent = names.length
+				? "Syncing " + names.join(", ")
+				: "No repositories yet. Click Choose on GitHub, pick some, then come back.";
+		if (names.length)
+			showToast(
+				"GitHub connected: " +
+					names.length +
+					(names.length === 1 ? " repository" : " repositories"),
+			);
+		await load();
+	} catch (error) {
+		if (status) status.textContent = "";
+		showError(error);
+	}
+}
+
+async function loadConnectSources() {
+	if (!isAdmin()) return;
+
+	const info = await api("/api/integrations/connect");
+	const notice = new URLSearchParams(location.search);
+
+	// GitHub returns here after the app is installed; go straight to picking repositories.
+	const returned =
+		notice.has("installation_id") && info.github.source === "app";
+	const githubRepositories = (state.workspace?.installations || [])
+		.filter(
+			(item) => item.provider === "github" && item.status !== "revoked",
+		)
+		.flatMap((item) => item.config?.repositories || []);
+
+	if (returned) window.history.replaceState(null, "", location.pathname);
+
+	const head = (icon, title) =>
+		'<h2><i class="ph ph-' +
+		icon +
+		'" aria-hidden="true"></i>' +
+		esc(title) +
+		"</h2>";
+
+	const fromServer =
+		"<p>Set by the server's environment. Change it there.</p>";
+
+	const disconnect = (provider) =>
+		'<button class="button quiet small" type="button" data-source-off="' +
+		provider +
+		'">Disconnect</button>';
+
+	const github = info.github.source
+		? head("github-logo", "GitHub") +
+			'<p class="source-on">App ready: ' +
+			esc(info.github.appSlug || "GitHub app") +
+			"</p>" +
+			(info.github.source === "environment"
+				? fromServer
+				: '<p id="github-repos-status">' +
+					esc(
+						githubRepositories.length
+							? "Reading " + githubRepositories.join(", ")
+							: "Pick repositories on GitHub; Panini reads the ones you choose there.",
+					) +
+					"</p>" +
+					'<div class="source-actions"><a class="button quiet small" href="' +
+					esc(info.github.installUrl) +
+					'">Choose on GitHub</a><button class="button primary small" type="button" data-source-repos>Sync repositories</button>' +
+					disconnect("github") +
+					"</div>")
+		: head("github-logo", "GitHub") +
+			"<p>One click creates a private Panini app in your GitHub account or organization. GitHub sends its keys straight back to this Panini.</p>" +
+			'<form id="github-source-form"><input name="organization" placeholder="GitHub organization (optional)" aria-label="GitHub organization, optional" autocomplete="off"><button class="button primary" type="submit">Create GitHub app</button></form>';
+	const slack = info.slack.source
+		? head("slack-logo", "Slack") +
+			'<p class="source-on">Connected' +
+			(info.slack.team ? " to " + esc(info.slack.team) : "") +
+			"</p>" +
+			(info.slack.source === "environment"
+				? fromServer
+				: "<p>Reading " +
+					info.slack.channels.length +
+					' channel(s). Invite the Panini bot to each one.</p><div class="source-actions">' +
+					disconnect("slack") +
+					"</div>")
+		: head("slack-logo", "Slack") +
+			'<p>1. Create the app (settings are filled in). 2. Click "Install to Workspace". 3. Under Basic Information, create an app-level token with <code>connections:write</code>. 4. Paste both tokens and the channel IDs here.</p>' +
+			'<div class="source-actions"><a class="button primary small" target="_blank" rel="noopener" href="' +
+			esc(info.slack.createAppUrl) +
+			'">Create Slack app</a></div>' +
+			'<form id="slack-source-form"><input name="botToken" type="password" placeholder="Bot token (xoxb-…)" autocomplete="off" required><input name="appToken" type="password" placeholder="App-level token (xapp-…)" autocomplete="off" required><input name="channels" placeholder="Channel IDs, comma separated (C0123…)" autocomplete="off" required><button class="button quiet" type="submit">Check and connect</button></form>';
+	const notion = info.notion.source
+		? head("notion-logo", "Notion") +
+			'<p class="source-on">Connected' +
+			(info.notion.workspace ? " to " + esc(info.notion.workspace) : "") +
+			"</p>" +
+			(info.notion.source === "environment"
+				? fromServer
+				: '<p>Panini reads the pages you share with the integration.</p><div class="source-actions">' +
+					disconnect("notion") +
+					"</div>")
+		: head("notion-logo", "Notion") +
+			"<p>1. Create an internal integration. 2. Share the pages Panini should read with it (••• → Connections). 3. Paste its secret here.</p>" +
+			'<div class="source-actions"><a class="button primary small" target="_blank" rel="noopener" href="https://www.notion.so/profile/integrations">Create Notion integration</a></div>' +
+			'<form id="notion-source-form"><input name="token" type="password" placeholder="Internal integration secret" autocomplete="off" required><button class="button quiet" type="submit">Check and connect</button></form>';
+
+	byId("connect-sources").innerHTML =
+		(notice.get("connected") === "github"
+			? '<p class="source-on source-notice">GitHub app created. Now install it on your repositories.</p>'
+			: notice.get("error") === "github-expired"
+				? '<p class="source-notice">That GitHub link expired. Try again.</p>'
+				: "") +
+		[
+			'<section class="source-card">' + github + "</section>",
+			'<section class="source-card">' + slack + "</section>",
+			'<section class="source-card">' + notion + "</section>",
+		].join("");
+	// Back from GitHub's install page: read the repositories picked there.
+	if (returned) void syncGithubRepositories();
+}
+
+byId("connect-sources").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const form = event.target as HTMLFormElement;
+	const values = formValues(form);
+	const button = form.querySelector<AppElement>("button[type=submit]");
+
+	button.disabled = true;
+	try {
+		if (form.id === "github-source-form") {
+			const start = await api("/api/integrations/github/manifest", {
+				method: "POST",
+				body: JSON.stringify({
+					organization: values.organization || "",
+				}),
+			});
+			// GitHub's manifest flow is a form POST to github.com.
+			const post = document.createElement("form");
+			const field = document.createElement("input");
+
+			post.method = "post";
+			post.action = start.action;
+			field.type = "hidden";
+			field.name = "manifest";
+			field.value = JSON.stringify(start.manifest);
+			post.append(field);
+			document.body.append(post);
+			post.submit();
+			return;
+		}
+		if (form.id === "slack-source-form")
+			await api("/api/integrations/slack", {
+				method: "PUT",
+				body: JSON.stringify({
+					botToken: values.botToken,
+					appToken: values.appToken,
+					channels: String(values.channels)
+						.split(/[\s,]+/)
+						.map((item) => item.trim().toUpperCase())
+						.filter(Boolean),
+				}),
+			});
+		if (form.id === "notion-source-form")
+			await api("/api/integrations/notion", {
+				method: "PUT",
+				body: JSON.stringify({ token: values.token }),
+			});
+		await loadConnectSources();
+	} catch (error) {
+		showError(error);
+	} finally {
+		button.disabled = false;
+	}
+});
+byId("connect-sources").addEventListener("click", async (event) => {
+	const target = event.target as AppElement;
+	const off = target.closest<AppElement>("[data-source-off]");
+
+	if (target.closest("[data-source-repos]")) void syncGithubRepositories();
+	if (!off) return;
+	try {
+		await api("/api/integrations/" + off.dataset.sourceOff, {
+			method: "DELETE",
+		});
+		await loadConnectSources();
+	} catch (error) {
+		showError(error);
+	}
+});

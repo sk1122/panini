@@ -1,3 +1,13 @@
+import { maskSecrets } from "../agents/code-edits.js";
+import {
+	checkNotion,
+	checkSlack,
+	connectorProviders,
+	convertGithubManifest,
+	environmentConnectors,
+	githubAppManifest,
+	slackAppManifest,
+} from "../connectors/credentials.js";
 import { supportedModels } from "../intelligence/model-settings.js";
 import {
 	createHash,
@@ -427,7 +437,11 @@ export async function buildHttpServer(options: HttpServerOptions) {
 			serializers: {
 				req: (request) => ({
 					method: request.method,
-					url: request.url.split("?")[0] ?? "/",
+					// Agent MCP URLs carry their secret; never log it.
+					url: (request.url.split("?")[0] ?? "/").replace(
+						/^\/mcp\/k\/[^/]+/,
+						"/mcp/k/[secret]",
+					),
 					remoteAddress: request.ip,
 				}),
 			},
@@ -585,7 +599,7 @@ export async function buildHttpServer(options: HttpServerOptions) {
 		return reply
 			.header(
 				"content-security-policy",
-				`default-src 'self'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+				`default-src 'self'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https://github.com`,
 			)
 			.header("x-content-type-options", "nosniff")
 			.header("referrer-policy", "strict-origin-when-cross-origin")
@@ -690,6 +704,7 @@ export async function buildHttpServer(options: HttpServerOptions) {
 				"people",
 				"timeline",
 				"review",
+				"decisions",
 				"agents",
 				"integrations",
 				"history",
@@ -784,13 +799,20 @@ export async function buildHttpServer(options: HttpServerOptions) {
 	);
 
 	app.get("/assets/phosphor.css", async (_request, reply) => {
-		const stylesheet = await readFile(
-			resolve(
-				process.cwd(),
-				"node_modules/@phosphor-icons/web/src/regular/style.css",
-			),
-			"utf8",
-		);
+		// Regular and fill weights; the fill font is served next to the regular one.
+		const stylesheet = (
+			await Promise.all(
+				["regular", "fill"].map((weight) =>
+					readFile(
+						resolve(
+							process.cwd(),
+							`node_modules/@phosphor-icons/web/src/${weight}/style.css`,
+						),
+						"utf8",
+					),
+				),
+			)
+		).join("\n");
 
 		return reply
 			.header("cache-control", "public, max-age=604800")
@@ -803,6 +825,20 @@ export async function buildHttpServer(options: HttpServerOptions) {
 			resolve(
 				process.cwd(),
 				"node_modules/@phosphor-icons/web/src/regular/Phosphor.woff2",
+			),
+		);
+
+		return reply
+			.header("cache-control", "public, max-age=31536000, immutable")
+			.type("font/woff2")
+			.send(font);
+	});
+
+	app.get("/assets/Phosphor-Fill.woff2", async (_request, reply) => {
+		const font = await readFile(
+			resolve(
+				process.cwd(),
+				"node_modules/@phosphor-icons/web/src/fill/Phosphor-Fill.woff2",
 			),
 		);
 
@@ -1318,6 +1354,38 @@ export async function buildHttpServer(options: HttpServerOptions) {
 	app.get("/api/agents/summary", async (request) =>
 		options.ledger.agentSummaries(access(request)),
 	);
+	app.get("/api/decisions", async (request) =>
+		options.ledger.listDecisions(access(request)),
+	);
+	app.post<{ Params: { decisionId: string } }>(
+		"/api/decisions/:decisionId/state",
+		async (request) => {
+			const body = z
+				.object({
+					state: z.enum(["acknowledged", "overridden", "unseen"]),
+					note: z.string().trim().max(2_000).optional(),
+				})
+				.parse(request.body);
+
+			return {
+				decision: await options.ledger.setDecisionState(
+					request.params.decisionId,
+					body.state,
+					body.note || null,
+					requestActor(request),
+					access(request),
+				),
+			};
+		},
+	);
+	app.get<{ Params: { sessionId: string } }>(
+		"/api/agents/sessions/:sessionId/edits",
+		async (request) =>
+			options.ledger.sessionEdits(
+				request.params.sessionId,
+				access(request),
+			),
+	);
 	app.get<{ Params: { sessionId: string } }>(
 		"/api/agents/sessions/:sessionId/story",
 		async (request) =>
@@ -1402,6 +1470,250 @@ export async function buildHttpServer(options: HttpServerOptions) {
 		return { current: null };
 	});
 
+	/*
+	 * Connect buttons. Each install creates its own apps: GitHub through its
+	 * app-manifest flow (credentials come back to us), Slack from a prefilled
+	 * manifest plus two pasted tokens, Notion with one pasted token. Stored
+	 * encrypted; a connector the server environment sets cannot be changed here.
+	 */
+	const connectorStore = () => {
+		const credentials = options.ledger.connectorCredentials;
+
+		if (!credentials)
+			throw new DomainError("Connectors need PostgreSQL.", "CONFLICT");
+		return credentials;
+	};
+
+	const githubManifestFlows = new Map<
+		string,
+		{ actor: string; expiresAt: number }
+	>();
+
+	const restartSoon = () => setTimeout(() => process.exit(75), 500);
+
+	/*
+	 * This Panini's own private GitHub app: the repositories its owner picked on
+	 * GitHub's install page are the ones to read. No second picker.
+	 */
+	app.post(
+		"/api/integrations/github/repositories",
+		async (request, reply) => {
+			requireAdmin(request);
+			if (!githubApp || !(await connectorStore().all()).github)
+				return reply.code(409).send({
+					error: "Create the GitHub app from this page first.",
+				});
+
+			const connected = [];
+
+			for (const installation of await githubApp.appInstallations()) {
+				if (installation.suspended_at) continue;
+
+				const repositories = (
+					await githubApp.installationRepositories(
+						await githubApp.installationToken(installation.id),
+					)
+				).filter((repository) => !repository.archived);
+
+				if (!repositories.length) continue;
+
+				const saved = await options.ledger.configureInstallation(
+					{
+						provider: "github",
+						installationKey: String(installation.id),
+						displayName: `GitHub: ${installation.account.login}`,
+						transport: "webhook",
+						status: "configured",
+						config: {
+							installationId: installation.id,
+							accountId: installation.account.id,
+							accountLogin: installation.account.login,
+							repositoryIds: repositories.map((item) => item.id),
+							repositories: repositories.map(
+								(item) => item.full_name,
+							),
+							permissions: installation.permissions,
+						},
+					},
+					requestActor(request),
+				);
+
+				await options.jobs.enqueue(
+					"connector.github.sync_requested",
+					`github-sync:${saved.id}:${Date.now()}`,
+					{
+						installationId: saved.id,
+						requestedBy: requestActor(request),
+					},
+				);
+				connected.push({
+					account: installation.account.login,
+					repositories: repositories.map((item) => item.full_name),
+				});
+			}
+			return { connected };
+		},
+	);
+
+	app.get("/api/integrations/connect", async (request) => {
+		requireAdmin(request);
+
+		const stored = await connectorStore().all();
+		const fromEnvironment = environmentConnectors(options.config);
+
+		const status = (provider: "github" | "slack" | "notion") =>
+			stored[provider]
+				? "app"
+				: fromEnvironment[provider]
+					? "environment"
+					: null;
+
+		return {
+			baseUrl: setupBaseUrl,
+			github: {
+				source: status("github"),
+				appSlug: options.config.githubApp?.appSlug ?? null,
+				installUrl: options.config.githubApp
+					? `https://github.com/apps/${encodeURIComponent(options.config.githubApp.appSlug)}/installations/new`
+					: null,
+			},
+			slack: {
+				source: status("slack"),
+				team: stored.slack?.team ?? null,
+				channels: stored.slack?.channels ?? [],
+				createAppUrl: `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(slackAppManifest((await options.ledger.getCompanyName()) ?? "your company")))}`,
+			},
+			notion: {
+				source: status("notion"),
+				workspace: stored.notion?.workspace ?? null,
+			},
+		};
+	});
+	app.post("/api/integrations/github/manifest", async (request) => {
+		requireAdmin(request);
+
+		const body = z
+			.object({
+				organization: z
+					.string()
+					.trim()
+					.regex(/^[A-Za-z0-9-]{1,39}$/)
+					.optional()
+					.or(z.literal("")),
+			})
+			.parse(request.body ?? {});
+		const state = randomBytes(24).toString("base64url");
+
+		githubManifestFlows.set(state, {
+			actor: requestActor(request),
+			expiresAt: Date.now() + 15 * 60_000,
+		});
+		return {
+			action: body.organization
+				? `https://github.com/organizations/${body.organization}/settings/apps/new?state=${state}`
+				: `https://github.com/settings/apps/new?state=${state}`,
+			manifest: githubAppManifest(
+				setupBaseUrl,
+				(await options.ledger.getCompanyName()) ?? "Panini",
+			),
+		};
+	});
+	app.get<{ Querystring: { code?: string; state?: string } }>(
+		"/api/integrations/github/created",
+		async (request, reply) => {
+			const flow = githubManifestFlows.get(request.query.state ?? "");
+
+			githubManifestFlows.delete(request.query.state ?? "");
+			if (!flow || flow.expiresAt < Date.now() || !request.query.code)
+				return reply.redirect("/app/integrations?error=github-expired");
+
+			const github = await convertGithubManifest(request.query.code);
+
+			await connectorStore().save("github", github, flow.actor);
+			await options.ledger.recordConnectorChange(
+				flow.actor,
+				"github",
+				"saved",
+			);
+			restartSoon();
+			return reply.redirect("/app/integrations?connected=github");
+		},
+	);
+	app.put("/api/integrations/slack", async (request) => {
+		requireAdmin(request);
+
+		const body = z
+			.object({
+				botToken: z.string().trim().min(10).max(300),
+				appToken: z.string().trim().min(10).max(300),
+				channels: z
+					.array(
+						z
+							.string()
+							.trim()
+							.regex(/^[CG][A-Z0-9]{6,}$/),
+					)
+					.min(1)
+					.max(50),
+			})
+			.parse(request.body);
+		const check = await checkSlack(body.botToken, body.appToken);
+
+		if (!check.ok) throw new DomainError(check.reason, "INVALID");
+		await connectorStore().save(
+			"slack",
+			{ ...body, team: check.label },
+			requestActor(request),
+		);
+		await options.ledger.recordConnectorChange(
+			requestActor(request),
+			"slack",
+			"saved",
+		);
+		return { connected: true, label: check.label };
+	});
+	app.put("/api/integrations/notion", async (request) => {
+		requireAdmin(request);
+
+		const body = z
+			.object({ token: z.string().trim().min(20).max(300) })
+			.parse(request.body);
+		const check = await checkNotion(body.token);
+
+		if (!check.ok) throw new DomainError(check.reason, "INVALID");
+		await connectorStore().save(
+			"notion",
+			{ token: body.token, workspace: check.label },
+			requestActor(request),
+		);
+		await options.ledger.recordConnectorChange(
+			requestActor(request),
+			"notion",
+			"saved",
+		);
+		return { connected: true, label: check.label };
+	});
+	app.delete<{ Params: { provider: string } }>(
+		"/api/integrations/:provider",
+		async (request) => {
+			requireAdmin(request);
+
+			const provider = z
+				.enum(connectorProviders)
+				.parse(request.params.provider);
+
+			await connectorStore().remove(provider);
+			await options.ledger.recordConnectorChange(
+				requestActor(request),
+				provider,
+				"removed",
+			);
+			// The server holds the GitHub app; restart it to drop the credentials.
+			if (provider === "github") restartSoon();
+			return { connected: false };
+		},
+	);
+
 	app.get("/api/reconcile/runs", async () => ({
 		enabled: await reconcileEnabled(),
 		runs: (await options.ledger.listReconcileRuns(10)).map(
@@ -1474,6 +1786,7 @@ export async function buildHttpServer(options: HttpServerOptions) {
 					request.params.noteId,
 					body.state,
 					requestActor(request),
+					access(request),
 				),
 			};
 		},
@@ -2509,7 +2822,14 @@ export async function buildHttpServer(options: HttpServerOptions) {
 			connectRequests.set(id, {
 				code: randomBytes(3).toString("hex").toUpperCase(),
 				pollHash: "",
-				harness: "generic_mcp",
+				// ChatGPT registers itself with OAuth; name it so people recognise it.
+				harness:
+					/chatgpt|openai/i.test(client.clientName) ||
+					client.redirectUris.some((uri) =>
+						uri.startsWith("https://chatgpt.com/"),
+					)
+						? "chatgpt"
+						: "generic_mcp",
 				repository: null,
 				hostname: client.clientName.slice(0, 120),
 				createdAt: Date.now(),
@@ -2733,6 +3053,127 @@ export async function buildHttpServer(options: HttpServerOptions) {
 			inferredClaim,
 			brief,
 		});
+	});
+
+	// A session's conversation, sent when it ends, to find the decisions the agent made.
+	app.post("/api/agent/hooks/transcript", async (request, reply) => {
+		const token = bearerToken(request);
+		const authenticated = token
+			? await options.ledger.authenticateAgentSecret(token)
+			: null;
+
+		if (!authenticated)
+			return reply.code(401).header("www-authenticate", "Bearer").send({
+				error: "A valid agent enrollment secret is required.",
+			});
+
+		const body = z
+			.object({
+				clientSessionId: z.string().trim().min(1).max(200),
+				transcript: z.string().min(1).max(200_000),
+				harness: z.string().trim().max(60).optional(),
+				repository: z.string().trim().max(200).optional(),
+				branch: z.string().trim().max(200).optional(),
+			})
+			.parse(request.body);
+		const session = await options.ledger.resolveAgentSession(
+			{
+				kind: "agent",
+				organizationId: authenticated.member.organizationId,
+				memberId: authenticated.member.id,
+				agentProfileId: authenticated.profile.id,
+				dataScope: authenticated.profile.dataScope,
+			},
+			{
+				clientSessionId: body.clientSessionId,
+				harness: body.harness ?? authenticated.profile.harness,
+				repository: body.repository ?? null,
+				branch: body.branch ?? null,
+				objective: null,
+			},
+		);
+
+		if (!options.ledger.decisions)
+			return reply.code(202).send({ queued: false });
+		// Secrets are masked before the text is stored or sent to a model.
+		await options.ledger.decisions.saveTranscript(
+			session.id,
+			maskSecrets(body.transcript),
+		);
+		await options.jobs.enqueue(
+			"decisions.extract_session",
+			`decisions:${session.id}:${Date.now()}`,
+			{ sessionId: session.id },
+		);
+		return reply.code(202).send({ queued: true });
+	});
+
+	// One file edit from an agent's coding tool (Claude Code's PostToolUse hook).
+	app.post("/api/agent/hooks/edit", async (request, reply) => {
+		const token = bearerToken(request);
+		const authenticated = token
+			? await options.ledger.authenticateAgentSecret(token)
+			: null;
+
+		if (!authenticated)
+			return reply.code(401).header("www-authenticate", "Bearer").send({
+				error: "A valid agent enrollment secret is required.",
+			});
+
+		const body = z
+			.object({
+				clientSessionId: z.string().trim().min(1).max(200),
+				toolUseId: z.string().trim().min(1).max(200),
+				tool: z.string().trim().min(1).max(40),
+				filePath: z.string().trim().min(1).max(500),
+				before: z.string().max(400_000).nullable(),
+				after: z.string().max(400_000),
+				harness: z.string().trim().max(60).optional(),
+				repository: z.string().trim().max(200).optional(),
+				branch: z.string().trim().max(200).optional(),
+			})
+			.parse(request.body);
+		const session = await options.ledger.resolveAgentSession(
+			{
+				kind: "agent",
+				organizationId: authenticated.member.organizationId,
+				memberId: authenticated.member.id,
+				agentProfileId: authenticated.profile.id,
+				dataScope: authenticated.profile.dataScope,
+			},
+			{
+				clientSessionId: body.clientSessionId,
+				harness: body.harness ?? authenticated.profile.harness,
+				repository: body.repository ?? null,
+				branch: body.branch ?? null,
+				objective: null,
+			},
+		);
+
+		// Decisions visible in the code: new dependencies, skipped tests, migrations.
+		await options.ledger
+			.recordCodeDecisions({
+				session,
+				agentName: authenticated.profile.name,
+				toolUseId: body.toolUseId,
+				tool: body.tool,
+				filePath: body.filePath,
+				before: body.before,
+				after: body.after,
+			})
+			.catch((error) =>
+				app.log.error({ error }, "Could not record code decisions."),
+			);
+		await options.ledger.codeEdits?.record({
+			sessionId: session.id,
+			agentProfileId: authenticated.profile.id,
+			toolUseId: body.toolUseId,
+			tool: body.tool,
+			filePath: body.filePath,
+			before: body.before,
+			after: body.after,
+		});
+		return reply.code(202).send({ recorded: true });
 	});
 
 	app.post("/api/relay/work-reports", async (request, reply) => {
@@ -3181,8 +3622,25 @@ export async function buildHttpServer(options: HttpServerOptions) {
 		return reply.code(202).send({ state: "queued", jobId: job.id });
 	});
 
-	app.all("/mcp", async (request, reply) => {
-		const token = bearerToken(request);
+	/*
+	 * Apps that take only a URL (ChatGPT, the Codex app) use /mcp/k/<secret>:
+	 * the agent's secret is part of the address instead of a header. It is the
+	 * same secret, revoked and rotated the same way.
+	 */
+	app.all<{ Params: { secret: string } }>(
+		"/mcp/k/:secret",
+		async (request, reply) =>
+			serveMcp(request, reply, request.params.secret),
+	);
+	app.all("/mcp", async (request, reply) =>
+		serveMcp(request, reply, bearerToken(request)),
+	);
+
+	async function serveMcp(
+		request: FastifyRequest,
+		reply: FastifyReply,
+		token: string | null,
+	) {
 		let principal: McpPrincipal | null = null;
 
 		if (
@@ -3241,7 +3699,7 @@ export async function buildHttpServer(options: HttpServerOptions) {
 				request.body,
 			),
 		);
-	});
+	}
 
 	app.setErrorHandler((error, _request, reply) => {
 		if (error instanceof AuthError) {

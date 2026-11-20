@@ -26,25 +26,25 @@ export function renderAppShell(
   <meta name="theme-color" content="#f5f6f7">
   <title>${safeCompany} | Panini</title>
   <link rel="icon" href="/assets/panini-mark.svg?v=pa" type="image/svg+xml">
-  <link rel="stylesheet" href="/assets/phosphor.css" nonce="${safeNonce}">
+  <link rel="stylesheet" href="/assets/phosphor.css?v=2" nonce="${safeNonce}">
   <style nonce="${safeNonce}">${appStyles}</style>
 </head>
 <body data-auth-mode="${accountsEnabled ? "accounts" : "legacy"}">
   <div class="app-shell">
     <aside class="sidebar">
       <a class="brand-lockup" href="/" aria-label="Panini home, named in tribute to the grammarian Pāṇini">
-        <span class="brand-mark" lang="sa" aria-hidden="true">प</span>
-        <div><strong>Panini</strong><span>The grammar of work.</span></div>
+        <span class="brand-mark" aria-hidden="true"><i class="ph-fill ph-flower-lotus"></i></span>
+        <div><strong>Panini</strong></div>
       </a>
 
       <nav class="side-nav" aria-label="Workspace views">
         <a class="nav-item active" href="/app/home" data-view="home"><i class="ph ph-house" aria-hidden="true"></i><b>Home</b><em id="home-count" hidden>0</em></a>
         <a class="nav-item" href="/app/projects" data-view="projects"><i class="ph ph-folder-simple" aria-hidden="true"></i><b>Projects</b><em id="project-count" hidden>0</em></a>
         <a class="nav-item" href="/app/tasks" data-view="work"><i class="ph ph-check-square" aria-hidden="true"></i><b>Tasks</b><em id="work-count" hidden>0</em></a>
-        <a class="nav-item" href="/app/context" data-view="context"><i class="ph ph-books" aria-hidden="true"></i><b>Context</b><em id="context-count" hidden>0</em></a>
+        <a class="nav-item" href="/app/context" data-view="context"><i class="ph ph-book-open-text" aria-hidden="true"></i><b>Knowledge</b><em id="context-count" hidden>0</em></a>
         <a class="nav-item" href="/app/people" data-view="people"><i class="ph ph-users-three" aria-hidden="true"></i><b>People</b><em id="people-count" hidden>0</em></a>
-        <a class="nav-item" id="review-nav" href="/app/review" data-view="review"><i class="ph ph-warning-circle" aria-hidden="true"></i><b>Changes</b><em id="review-count" hidden>0</em></a>
-        <a class="nav-item" href="/app/timeline" data-view="timeline"><i class="ph ph-clock-counter-clockwise" aria-hidden="true"></i><b>Timeline</b></a>
+        <a class="nav-item" href="/app/decisions" data-view="decisions"><i class="ph ph-scales" aria-hidden="true"></i><b>Decisions</b><em id="decision-count" hidden>0</em></a>
+        <a class="nav-item" id="review-nav" href="/app/review" data-view="review"><i class="ph ph-clock-counter-clockwise" aria-hidden="true"></i><b>Activity</b><em id="review-count" hidden>0</em></a>
         <div hidden>
           <em id="company-count">0</em><em id="history-count">0</em><details id="nav-more"></details>
         </div>
@@ -60,6 +60,7 @@ export function renderAppShell(
     <div class="workspace">
       <header class="topbar">
         <div class="crumb"><strong id="current-view-label">Home</strong></div>
+        <button class="button primary small topbar-new" type="button" data-new-task><i class="ph ph-plus" aria-hidden="true"></i>New task</button>
         <details class="workspace-menu agent-connect-menu" id="agent-connect-menu" hidden><summary class="button quiet small">Connect MCP</summary><div class="workspace-menu-items"><label for="connect-agent-profile">Agent</label><select id="connect-agent-profile" aria-label="Agent to connect"></select><div id="connect-harness-options"></div></div></details>
         <details class="workspace-menu" id="workspace-menu"><summary class="workspace-switcher">
           <span class="workspace-avatar" id="workspace-avatar">${safeCompany.slice(0, 1).toUpperCase()}</span>
@@ -75,6 +76,7 @@ export function renderAppShell(
       </header>
 
       <main>
+        <div class="toast" id="toast" role="status" hidden><i class="ph-fill ph-check-circle" aria-hidden="true"></i><span id="toast-copy"></span><button class="button quiet small" type="button" id="toast-action"></button></div>
         <div class="alert" id="alert" role="alert"><span id="alert-copy"></span><button aria-label="Dismiss error" id="dismiss-alert"><i class="ph ph-x" aria-hidden="true"></i></button></div>
 
         <section class="view" id="view-onboarding">
@@ -154,13 +156,16 @@ export function renderAppShell(
         </section>
 
         <section class="view active" id="view-home">
-          <div class="page-head"><div><h1>Today</h1><p>What needs you, who is working on what now, and what changed.</p></div><span class="big-count" id="home-freshness">Loading</span></div>
-          <div class="company-columns">
-            <section><div class="section-head"><div><h2>Needs you</h2><p>Notes from agents, and changes that could not apply.</p></div><button class="button quiet small" type="button" id="home-accept-all" hidden>Accept all observed</button></div><div class="company-list" id="home-needs"></div></section>
-            <section><div class="section-head"><div><h2>Working now</h2><p>Agents holding a claim on a task.</p></div><button class="button quiet small" type="button" data-go-view="agents">See agents</button></div><div class="company-list" id="home-working"></div></section>
+          <div class="page-head"><div><h1>Today</h1><p id="home-date"></p></div><span class="big-count" id="home-freshness" hidden></span></div>
+          <div class="stat-strip" id="home-stats"></div>
+          <div class="home-grid">
+            <div>
+              <section class="panel"><header><h2>Needs you <span class="panel-count" id="home-needs-count"></span></h2><button class="button quiet small" type="button" id="home-accept-all" hidden>Accept all</button></header><div class="panel-list" id="home-needs"></div></section>
+              <section class="panel"><header><h2>Your work <span class="panel-count" id="home-mine-count"></span></h2><button class="button quiet small" type="button" data-go-view="work">All tasks</button></header><div class="panel-list" id="home-mine"></div></section>
+            </div>
+            <section class="panel"><header><h2>Working now <span class="panel-count" id="home-working-count"></span></h2><button class="button quiet small" type="button" data-go-view="agents">Agents</button></header><div class="panel-list" id="home-working"></div></section>
           </div>
-          <div class="section-head"><div><h2>Changed recently</h2><p>Accepted updates to work and company knowledge.</p></div><button class="button quiet small" type="button" data-go-view="history">See history</button></div>
-          <div class="company-list" id="home-changed"></div>
+          <div id="home-changed" hidden></div>
           <div class="home-sources" id="home-sources" aria-live="polite"></div>
           <div class="home-sources" id="home-reconcile"></div>
         </section>
@@ -173,14 +178,19 @@ export function renderAppShell(
           <div class="projects-summary"><span><b id="project-metric">0 projects</b></span><i class="ph ph-arrow-right" aria-hidden="true"></i><span><b id="accepted-task-metric">0</b> tasks</span><i class="ph ph-arrow-right" aria-hidden="true"></i><button type="button" data-go-view="review"><b id="decision-metric">0</b> changes could not apply</button></div>
           <div id="project-suggestions"></div>
           <div class="projects-workspace" id="projects">
-            <aside class="project-index"><header><h2>Projects</h2><span>Current</span></header><div id="projects-index"></div></aside>
+            <aside class="project-index"><header><h2>All projects</h2></header><div id="projects-index"></div></aside>
             <section class="project-focus" id="project-focus" aria-live="polite"></section>
-            <aside class="project-rail"><section><header><h2>Needs a decision</h2><b id="project-decision-count">0</b></header><div id="project-decisions"></div></section><section><header><h2>Latest accepted change</h2></header><div id="project-history"></div></section></aside>
+            <aside class="project-rail"><section id="project-decisions-section"><header><h2>Needs a decision</h2><b id="project-decision-count">0</b></header><div id="project-decisions"></div></section><section><header><h2>Recent changes</h2></header><div id="project-history"></div></section></aside>
           </div>
         </section>
 
+        <section class="view" id="view-decisions">
+          <div class="page-head"><div><h1>Decisions</h1></div></div>
+          <div id="decisions"></div>
+        </section>
+
         <section class="view" id="view-review">
-          <div class="page-head"><div><h1>Changes</h1><p>Agents and the nightly run change tasks and context right away. If something is wrong, undo it here.</p></div><span class="big-count" id="proposal-metric">0 changes</span></div>
+          <div class="page-head"><div><h1>Activity</h1><p>Agents and the nightly run change tasks and context right away. If something is wrong, undo it here.</p></div><span class="big-count" id="proposal-metric">0 changes</span></div>
           <div class="review-layout">
             <div class="proposal-list"><div id="proposals"></div><div id="recent-changes"></div></div>
             <details class="processing-details" data-admin-only><summary>Processing details</summary><div id="evidence-coverage" hidden></div></details>
@@ -188,7 +198,7 @@ export function renderAppShell(
         </section>
 
         <section class="view" id="view-context">
-          <div class="page-head"><div><h1>Context</h1><p>Plans, decisions, policies, and other information the company has recorded.</p></div></div>
+          <div class="page-head"><div><h1>Knowledge</h1><p>Plans, decisions, policies, and other information the company has recorded.</p></div></div>
           <div class="context-tabs" role="tablist" aria-label="Knowledge views">
             <button class="context-tab active" type="button" role="tab" aria-selected="true" data-context-mode="accepted"><i class="ph ph-seal-check" aria-hidden="true"></i><span><b>Company knowledge</b><small>Current and earlier versions</small></span></button>
             <button class="context-tab" type="button" role="tab" aria-selected="false" data-context-mode="sources"><i class="ph ph-archive" aria-hidden="true"></i><span><b>Original sources</b><small>Documents behind the knowledge</small></span></button>
@@ -228,7 +238,8 @@ export function renderAppShell(
         </section>
 
         <section class="view" id="view-integrations">
-          <div class="agents-hero"><div><h1>Integrations</h1><p>Manage where company information comes from.</p></div><div class="top-actions"><button class="button quiet" id="analyze" hidden><i class="ph ph-magic-wand" aria-hidden="true"></i>Analyze evidence</button><button class="button quiet" id="sync"><i class="ph ph-arrows-clockwise" aria-hidden="true"></i>Sync sources</button><button class="button primary" id="connect-github"><i class="ph ph-github-logo" aria-hidden="true"></i>Connect GitHub</button><button class="button quiet" id="new-integration"><i class="ph ph-plus" aria-hidden="true"></i>Add integration</button></div></div>
+          <div class="agents-hero"><div><h1>Integrations</h1><p>Manage where company information comes from.</p></div><div class="top-actions"><button class="button quiet" id="analyze" hidden><i class="ph ph-magic-wand" aria-hidden="true"></i>Analyze evidence</button><button class="button quiet" id="sync"><i class="ph ph-arrows-clockwise" aria-hidden="true"></i>Sync sources</button><button class="button primary" id="connect-github" hidden><i class="ph ph-github-logo" aria-hidden="true"></i>Connect GitHub</button><button class="button quiet" id="new-integration" hidden><i class="ph ph-plus" aria-hidden="true"></i>Add integration</button></div></div>
+          <div class="connect-sources" id="connect-sources" data-admin-only></div>
           <div class="integration-grid" id="integrations"></div>
         </section>
       </main>
@@ -239,7 +250,9 @@ export function renderAppShell(
     <h2>Run this in the repository your agent works in</h2>
     <div class="connect-command"><code>npx panini-work connect</code><button class="button quiet small" type="button" id="connect-command-copy">Copy</button></div>
     <ol class="connect-steps"><li>It opens this page and shows a short code. Check it matches your terminal, then approve.</li><li>It saves the agent's key in your keychain and sets up Claude Code for you. For other agents it prints one setup line.</li><li>Start a new agent session. It appears here within a minute.</li></ol>
-    <p class="connect-alt">Using another MCP client? <button class="text-button" type="button" id="connect-manual">Set it up manually</button></p>
+    <section class="connect-app"><h3>No terminal? Use an MCP URL</h3><p>Name the agent, then paste its MCP URL into any app that supports MCP.</p>
+      <form id="connect-app-form" class="connect-app-form"><input name="name" placeholder="Agent name, e.g. Satyam's ChatGPT" required maxlength="120" aria-label="Agent name" autocomplete="off"><input type="hidden" name="harness" value="chatgpt"><button class="button primary" type="submit">Get MCP URL</button></form></section>
+    <p class="connect-alt">Need custom access rules? <button class="text-button" type="button" id="connect-manual">Set it up manually</button></p>
   </div></dialog>
   <dialog id="session-dialog"><form class="modal session-modal" id="session-form"><div class="modal-cap"><span class="modal-label">Local administrator</span></div><h2>Unlock this workspace</h2><p>Enter the private administrator token created by <code>panini-setup init</code>. It is exchanged for an eight-hour protected session and is never stored in the browser.</p><div class="field"><label for="session-token">Administrator token</label><input id="session-token" name="token" type="password" required autocomplete="current-password" spellcheck="false"></div><p class="form-error" id="session-error" role="alert" hidden></p><div class="modal-actions"><button class="button primary" type="submit"><i class="ph ph-lock-key" aria-hidden="true"></i>Unlock workspace</button></div></form></dialog>
 
@@ -311,8 +324,9 @@ export function renderAppShell(
 
   <dialog id="agent-scope-dialog"><form class="modal" id="agent-scope-form"><div class="modal-cap"><span class="modal-label">Agent access</span><button type="button" class="icon-button" data-close="agent-scope-dialog" aria-label="Close"><i class="ph ph-x" aria-hidden="true"></i></button></div><h2>Edit access</h2><p>Changes take effect on the agent's next MCP call. Its secret does not change.</p>
     <input type="hidden" name="agentId" id="agent-scope-id">
-    <div class="field"><label for="agent-scope-projects">Allowed projects</label><textarea id="agent-scope-projects" name="projects" placeholder="One project per line, or * for all work"></textarea><small>* includes future projects and unassigned tasks.</small></div>
-    <div class="field-pair"><div class="field"><label for="agent-scope-paths">Context paths</label><textarea id="agent-scope-paths" name="contextPaths"></textarea></div><div class="field"><label for="agent-scope-visibilities">Source visibility</label><textarea id="agent-scope-visibilities" name="sourceVisibilities"></textarea></div></div>
+    <div class="access-field"><span>Projects</span><details class="multi-select" id="agent-scope-projects"></details></div>
+    <div class="access-field"><span>Knowledge</span><details class="multi-select" id="agent-scope-paths"></details></div>
+    <div class="access-field"><span>Sources</span><details class="multi-select" id="agent-scope-visibilities"></details></div>
     <div class="modal-actions"><button class="button quiet" type="button" data-close="agent-scope-dialog">Cancel</button><button class="button primary" type="submit">Save access</button></div>
   </form></dialog>
 

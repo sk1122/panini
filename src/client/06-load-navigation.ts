@@ -32,12 +32,19 @@ async function load() {
 			api("/api/history?view=changes&limit=250"),
 			api("/api/project-proposals"),
 		]);
-		const [home, agentOverview, reconcile, changes] = await Promise.all([
-			api("/api/home").catch(() => null),
-			api("/api/agents/summary").catch(() => null),
-			api("/api/reconcile/runs").catch(() => null),
-			api("/api/changes").catch(() => ({ changes: [] })),
-		]);
+		const [home, agentOverview, reconcile, changes, decisions] =
+			await Promise.all([
+				api("/api/home").catch(() => null),
+				api("/api/agents/summary").catch(() => null),
+				api("/api/reconcile/runs").catch(() => null),
+				api("/api/changes").catch(() => ({ changes: [] })),
+				api("/api/decisions").catch(() => ({
+					decisions: [],
+					needsYou: 0,
+				})),
+			]);
+
+		state.decisions = decisions;
 
 		state.changes = changes.changes;
 
@@ -114,6 +121,7 @@ async function load() {
 			),
 		);
 		renderBoard();
+		renderDecisions();
 		renderHome();
 		renderReconcile();
 		renderAgentBoard();
@@ -144,6 +152,7 @@ const pathByView = {
 	work: "/app/tasks",
 	projects: "/app/projects",
 	review: "/app/review",
+	decisions: "/app/decisions",
 	context: "/app/context",
 	agents: "/app/agents",
 	integrations: "/app/integrations",
@@ -194,11 +203,12 @@ function navigate(
 	byId("current-view-label").textContent =
 		{
 			home: "Home",
-			context: "Context",
+			context: "Knowledge",
 			timeline: "Timeline",
 			projects: "Projects",
 			work: "Tasks",
-			review: "Changes",
+			review: "Activity",
+			decisions: "Decisions",
 			integrations: "Integrations",
 		}[view] || view;
 
@@ -217,6 +227,7 @@ function navigate(
 		void loadSettings().catch(showError);
 	if (state.account && view === "onboarding")
 		void loadOnboarding().catch(showError);
+	if (view === "integrations") void loadConnectSources().catch(showError);
 }
 
 document
@@ -387,6 +398,9 @@ byId("dismiss-alert").addEventListener("click", clearError);
 byId("new-task").addEventListener("click", () =>
 	byId("task-dialog").showModal(),
 );
+document
+	.querySelector("[data-new-task]")
+	?.addEventListener("click", () => byId("task-dialog").showModal());
 byId("new-project").addEventListener("click", () => {
 	byId("project-form").reset();
 	delete byId("project-form").dataset.projectId;

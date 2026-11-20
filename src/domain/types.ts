@@ -688,6 +688,7 @@ export const agentHarnesses = [
 	"hermes",
 	"pi",
 	"generic_mcp",
+	"chatgpt",
 ] as const;
 export type AgentHarness = (typeof agentHarnesses)[number];
 

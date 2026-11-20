@@ -267,6 +267,41 @@
       "when": 1792105000000,
       "tag": "0037_model_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1792106000000,
+      "tag": "0038_chatgpt_harness",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1792107000000,
+      "tag": "0039_connector_credentials",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1792200000000,
+      "tag": "0040_agent_code_edits",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1792300000000,
+      "tag": "0041_decisions",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1792400000000,
+      "tag": "0042_session_transcripts",
+      "breakpoints": true
     }
   ]
 }

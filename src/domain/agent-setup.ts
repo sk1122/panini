@@ -23,6 +23,8 @@ export interface AgentSetupRecipe {
 	harnessLabel: string;
 	serverName: string;
 	endpoint: string;
+	/** The MCP URL with this agent's secret in it, for apps that take only a URL. */
+	secretUrl: string | null;
 	tokenEnvironmentVariable: string;
 	steps: readonly AgentSetupStep[];
 	verificationPrompt: string;
@@ -55,25 +57,62 @@ export function buildAgentSetup(
 	const endpoint = `${baseUrl.replace(/\/$/, "")}/mcp`;
 	const serverName = `panini-${slug(profile.name)}-${profile.id.slice(0, 6)}`;
 	const tokenEnvironmentVariable = `PANINI_AGENT_${profile.id.replaceAll("-", "").slice(0, 8).toUpperCase()}_TOKEN`;
+	const secretUrl = enrollmentSecret
+		? `${endpoint}/k/${enrollmentSecret}`
+		: null;
 	const shared = {
 		profileId: profile.id,
 		harness: profile.harness,
 		serverName,
 		endpoint,
+		secretUrl,
 		tokenEnvironmentVariable,
 		verificationPrompt:
-			"Read the company context index, find my current work, and explain which changes require review.",
+			"Use Panini: read the company context, find my current work, and claim the task you will work on.",
 		notes: [
-			"The secret is shown only after creation or rotation.",
-			"Agent writes create reviewable proposals or evidence. They do not directly change accepted work or context.",
+			"The secret, and the URL that contains it, are shown only after creation or rotation.",
+			"This agent's changes to tasks and context apply at once. People can undo them in Panini.",
 			`Granted capabilities: ${profile.capabilities.join(", ")}.`,
 		],
 	} as const;
 
+	if (profile.harness === "chatgpt") {
+		const loopback = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/.test(
+			endpoint,
+		);
+
+		return {
+			...shared,
+			harnessLabel: "MCP app",
+			steps: [
+				{
+					title: "Copy this agent's MCP URL",
+					copy: "It contains the agent's secret, so treat it like a password. Revoke the agent in Panini to switch it off.",
+					code:
+						secretUrl ??
+						"The URL is hidden after creation. Rotate the secret to get a new one.",
+				},
+				{
+					title: "Paste it into your app",
+					copy: "Add a remote MCP server with this URL and no authentication. In ChatGPT: Settings → Connectors → Developer mode → Create. In the Codex app: MCP settings, or ~/.codex/config.toml.",
+					code: `[mcp_servers.${serverName}]\nurl = ${JSON.stringify(secretUrl ?? "<this agent's MCP URL>")}`,
+				},
+			],
+			notes: [
+				...(loopback
+					? [
+							"Apps that run in the cloud, like ChatGPT, cannot reach 127.0.0.1. Put Panini on a public HTTPS address first. Apps on this computer can use the local address.",
+						]
+					: []),
+				...shared.notes,
+			],
+		};
+	}
+
 	if (profile.harness === "codex") {
 		return {
 			...shared,
-			harnessLabel: "Codex",
+			harnessLabel: "Codex CLI",
 			steps: [
 				shellSecretStep(tokenEnvironmentVariable),
 				{
@@ -84,9 +123,9 @@ export function buildAgentSetup(
 				...(enrollmentSecret
 					? [
 							{
-								title: "Or connect with the secret directly",
-								copy: "Use this only on a private machine. Codex stores the secret in plaintext in your user config.",
-								code: `[mcp_servers.${serverName}]\nurl = ${JSON.stringify(endpoint)}\nhttp_headers = { Authorization = ${JSON.stringify(`Bearer ${enrollmentSecret}`)} }`,
+								title: "Or paste one line into ~/.codex/config.toml",
+								copy: "Works for the Codex app too. The URL contains the secret, so keep the file private.",
+								code: `[mcp_servers.${serverName}]\nurl = ${JSON.stringify(secretUrl)}`,
 							},
 						]
 					: []),

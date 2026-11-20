@@ -1,3 +1,4 @@
+import { extractSessionDecisions } from "./decisions/from-session.js";
 import {
 	claudeFetcher,
 	isClaudeModel,
@@ -21,7 +22,7 @@ import { ContextEmbeddingIndexer } from "./retrieval/context-embedding-indexer.j
 import { GithubAppClient } from "./connectors/github/app-client.js";
 import { GithubRepositorySync } from "./connectors/github/sync.js";
 import { EvidenceDiscoverySweep } from "./reconciliation/evidence-discovery.js";
-import { priceBasisFor } from "./intelligence/model-price.js";
+import { priceBasisFor, settledCost } from "./intelligence/model-price.js";
 import { BudgetedVoyageEmbeddings } from "./intelligence/voyage-work-embeddings.js";
 import { meteredProviderFetch } from "./intelligence/external-call-meter.js";
 import { evidencePipelineMode } from "./config.js";
@@ -254,9 +255,39 @@ const observationAgent = observationAgentEnabled
 			maxContextBytes: config.app.intelligence.evidenceV2.maxInputTokens,
 		})
 	: null;
-const allowedVisibilities = config.jevWorkAllowedVisibilities.length
+const baseVisibilities = config.jevWorkAllowedVisibilities.length
 	? config.jevWorkAllowedVisibilities
 	: ["company"];
+// One shared list, refreshed before each run, so the agent sees changes.
+const allowedVisibilities = [...baseVisibilities];
+
+/*
+ * A source an admin connected from the app is one the run may read. Repositories
+ * can change at any time, so their labels are read from the installations.
+ */
+async function refreshAllowedVisibilities() {
+	const fromApp = Boolean((await store.connectorCredentials?.all())?.github);
+	const repositories = fromApp
+		? (await store.listSourceInstallations())
+				.filter(
+					(installation) =>
+						installation.provider === "github" &&
+						!["revoked", "disabled"].includes(installation.status),
+				)
+				.flatMap((installation) =>
+					(
+						(installation.config as { repositories?: string[] })
+							.repositories ?? []
+					).map((name) => `github:repository:${name.toLowerCase()}`),
+				)
+		: [];
+
+	allowedVisibilities.splice(
+		0,
+		allowedVisibilities.length,
+		...new Set([...baseVisibilities, ...repositories]),
+	);
+}
 
 /*
  * The model for this run: the server's environment first, otherwise the
@@ -301,9 +332,18 @@ async function currentObserver(): Promise<{
 			}),
 		};
 
-	const budget = settings.budgetId
+	let budget = settings.budgetId
 		? await store.getInferenceBudget(settings.budgetId)
 		: null;
+
+	// A lost call suspends the budget. Charge it at its reserved maximum and keep
+	// the same budget, so the monthly cap holds and interrupted work can resume.
+	if (budget?.state === "suspended") {
+		for (const call of await store.listUnknownModelCalls(budget.id))
+			await store.reconcileUnknownModelCallAtReservedBound(call.id);
+		budget = await store.getInferenceBudget(budget.id);
+	}
+
 	let budgetId = budget?.id ?? null;
 
 	if (
@@ -341,6 +381,7 @@ handlers.set("evidence.source.recorded", async (job) => {
 	const payload = z.object({ eventId: z.uuid() }).parse(job.payload);
 	const event = (await store.getSourceEvents([payload.eventId]))[0];
 
+	await refreshAllowedVisibilities();
 	if (
 		!event ||
 		// Claims, handoffs and decision drafts were applied by rules in the fast lane.
@@ -414,8 +455,102 @@ handlers.set("evidence.source.ready", async (job) => {
 		budgetId: observer.budgetId,
 	});
 });
+
+/*
+ * Reads ended sessions' conversations with the workspace's model and records
+ * the decisions each agent made. The transcript is deleted once it is read.
+ */
+async function extractSessionDecisionsFor(only?: string) {
+	const decisions = store.decisions;
+	const settings = await store.modelSettings?.get();
+	const price = settings && priceBasisFor(settings.model);
+	const observer = settings && price ? await currentObserver() : null;
+
+	if (!decisions || !settings || !price || !observer) return;
+
+	for (const sessionId of only
+		? [only]
+		: await decisions.pendingTranscripts()) {
+		const budget = await store.getInferenceBudget(observer.budgetId);
+
+		if (!budget || budget.state !== "active") return;
+
+		const transcript = await decisions.readTranscript(sessionId);
+		const session = transcript
+			? await ledger.agents.getSession(sessionId)
+			: null;
+
+		if (!transcript || !session) continue;
+
+		const result = await extractSessionDecisions({
+			transcript,
+			model: settings.model,
+			apiKey: settings.apiKey,
+			fetcher: isClaudeModel(settings.model)
+				? claudeFetcher(settings.apiKey)
+				: fetch,
+		});
+
+		await decisions.chargeBudget(
+			observer.budgetId,
+			settledCost(
+				result.inputTokens,
+				result.cachedInputTokens,
+				result.outputTokens,
+				price,
+			) ?? "0",
+			result.inputTokens,
+			result.outputTokens,
+		);
+
+		const agentName =
+			(await store.listAgentProfiles()).find(
+				(profile) => profile.id === session.agentProfileId,
+			)?.name ?? "Agent";
+
+		for (const found of result.decisions)
+			await decisions.record({
+				sourceKind: "session",
+				sourceKey: `session:${session.id}:${found.title
+					.toLowerCase()
+					.replace(/[^a-z0-9]+/g, "-")
+					.slice(0, 80)}`,
+				title: found.title,
+				category: found.category,
+				statement: found.statement,
+				reason: found.reason,
+				alternatives: found.alternatives,
+				evidence: found.quote,
+				decidedBy: agentName,
+				agentProfileId: session.agentProfileId,
+				ownerMemberId: session.memberId,
+				sessionId: session.id,
+				repository: session.repository,
+				silent: !found.askedByUser,
+				decidedAt: session.endedAt ?? new Date().toISOString(),
+			});
+		await decisions.deleteTranscript(sessionId);
+		log.info("Session decisions extracted.", {
+			sessionId,
+			decisions: result.decisions.length,
+		});
+	}
+}
+
+handlers.set("decisions.extract_session", async (job) => {
+	const payload = z.object({ sessionId: z.uuid() }).parse(job.payload);
+
+	await extractSessionDecisionsFor(payload.sessionId);
+});
 handlers.set("reconcile.run", async (job) => {
 	const observer = await currentObserver();
+
+	await refreshAllowedVisibilities();
+	await extractSessionDecisionsFor().catch((error) =>
+		log.error("Session decision extraction failed.", {
+			error: error instanceof Error ? error.message : String(error),
+		}),
+	);
 
 	if (!store.reconcileRuns || !observer) return;
 
@@ -654,6 +789,7 @@ const shutdown = async (signal: string) => {
 	if (shuttingDown) return;
 	shuttingDown = true;
 	clearInterval(heartbeatTimer);
+	clearInterval(connectorWatch);
 	if (reconcileTimer) clearInterval(reconcileTimer);
 	log.info("Panini worker stopping.", { signal });
 	notionPoller?.stop();
@@ -668,3 +804,19 @@ const shutdown = async (signal: string) => {
 
 process.once("SIGINT", () => void shutdown("SIGINT"));
 process.once("SIGTERM", () => void shutdown("SIGTERM"));
+
+// Connectors added or removed in the app take effect after a restart. Exit
+// code 75 asks the supervisor (Docker, or npx panini-work) to start us again.
+const connectorVersion = await store.connectorCredentials?.version();
+const connectorWatch = setInterval(() => {
+	void store.connectorCredentials
+		?.version()
+		.then(async (version) => {
+			if (version === connectorVersion || shuttingDown) return;
+			clearInterval(connectorWatch);
+			log.info("Connector settings changed; restarting the worker.");
+			await shutdown("connector settings changed");
+			process.exit(75);
+		})
+		.catch(() => undefined);
+}, 15_000);

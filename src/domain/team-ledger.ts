@@ -1,3 +1,5 @@
+import { maskSecrets } from "../agents/code-edits.js";
+import { detectCodeDecisions } from "../decisions/from-code.js";
 import {
 	checkModelKey,
 	isSupportedModel,
@@ -702,8 +704,50 @@ export class TeamLedger {
 		id: string,
 		state: TeamNote["state"],
 		actor: string,
-	): Promise<TeamNote> {
+		access: AccessScope = { kind: "admin" },
+	): Promise<TeamNote & { contextEntryId?: string; contextPath?: string }> {
 		const note = await this.agents.setNoteState(id, state);
+		let kept: ContextEntry | null = null;
+
+		// A kept note becomes company knowledge, so the team can find it later.
+		if (state === "promoted") {
+			const sentence = note.text.split(/(?<=[.!?])\s/)[0] ?? note.text;
+			const title =
+				sentence.length > 120
+					? sentence.slice(0, 117).trimEnd() + "..."
+					: sentence;
+			const slug =
+				title
+					.toLowerCase()
+					.replace(/[^a-z0-9]+/g, "-")
+					.replace(/^-|-$/g, "")
+					.slice(0, 60) || "note";
+			const author =
+				note.author.split(":").slice(2).join(":") || note.author;
+
+			kept = await this.createContextEntry(
+				{
+					kind: "file",
+					path: `/notes/${slug}-${note.id.slice(0, 6)}`,
+					title,
+					body: [
+						note.text,
+						...(note.links.length
+							? [
+									"",
+									"Links:",
+									...note.links.map((link) => `- ${link}`),
+								]
+							: []),
+						"",
+						`Noted by ${author} on ${note.createdAt.slice(0, 10)}${note.project ? ` in ${note.project}` : ""}.`,
+					].join("\n"),
+					clientEventId: `note-keep:${note.id}`,
+				},
+				actor,
+				access,
+			);
+		}
 
 		await this.store.appendAuditEvent({
 			actor,
@@ -712,9 +756,11 @@ export class TeamLedger {
 			targetId: id,
 			sourceEventId: note.sourceEventId,
 			proposalId: null,
-			details: {},
+			details: kept ? { contextEntryId: kept.id, path: kept.path } : {},
 		});
-		return note;
+		return kept
+			? { ...note, contextEntryId: kept.id, contextPath: kept.path }
+			: note;
 	}
 
 	/**
@@ -779,6 +825,34 @@ export class TeamLedger {
 				supersedes: input.supersedes,
 			},
 		});
+
+		// The decisions ledger: silent when the agent decided, not its owner.
+		if (input.session && input.access.kind === "agent") {
+			const owner = (await this.store.listMembers()).find(
+				(member) => member.id === input.session!.memberId,
+			);
+			const byOwner =
+				Boolean(owner) &&
+				input.decidedBy.trim().toLowerCase() ===
+					owner!.displayName.trim().toLowerCase();
+
+			await this.store.decisions?.record({
+				sourceKind: "agent",
+				sourceKey: `agent:${input.requestedBy}:${input.clientEventId}`,
+				title: input.title,
+				category: "Reported by agent",
+				statement: input.statement,
+				reason: input.reason,
+				alternatives: input.rejectedOptions,
+				decidedBy: input.decidedBy,
+				agentProfileId: input.session.agentProfileId,
+				ownerMemberId: input.session.memberId,
+				sessionId: input.session.id,
+				repository: input.session.repository,
+				silent: !byOwner,
+				decidedAt: input.decidedAt,
+			});
+		}
 
 		return this.proposeContextFileForAccess(
 			{
@@ -1001,6 +1075,38 @@ export class TeamLedger {
 			action: "model_settings.removed",
 			targetType: "model_settings",
 			targetId: "nightly",
+			sourceEventId: null,
+			proposalId: null,
+			details: {},
+		});
+	}
+
+	get codeEdits() {
+		return this.store.codeEdits;
+	}
+
+	get decisions() {
+		return this.store.decisions;
+	}
+
+	get connectorCredentials() {
+		return this.store.connectorCredentials;
+	}
+
+	async getCompanyName(): Promise<string | null> {
+		return (await this.store.getOrganization()).name ?? null;
+	}
+
+	async recordConnectorChange(
+		actor: string,
+		provider: string,
+		change: "saved" | "removed",
+	) {
+		await this.store.appendAuditEvent({
+			actor,
+			action: `connector.${change}`,
+			targetType: "connector",
+			targetId: provider,
 			sourceEventId: null,
 			proposalId: null,
 			details: {},
@@ -1231,6 +1337,173 @@ export class TeamLedger {
 	}
 
 	/** One session's activity, told in plain sentences. */
+	/** Decisions visible in one code edit, recorded as silent decisions of that agent. */
+	async recordCodeDecisions(input: {
+		session: AgentSession;
+		agentName: string;
+		toolUseId: string;
+		tool: string;
+		filePath: string;
+		before: string | null;
+		after: string;
+	}): Promise<number> {
+		if (!this.store.decisions) return 0;
+
+		let recorded = 0;
+
+		for (const found of detectCodeDecisions(input))
+			if (
+				await this.store.decisions.record({
+					sourceKind: "code",
+					sourceKey: `code:${input.session.id}:${input.toolUseId}:${found.rule}`,
+					title: found.title,
+					category: found.category,
+					statement: found.statement,
+					evidence: maskSecrets(found.evidence),
+					decidedBy: input.agentName,
+					agentProfileId: input.session.agentProfileId,
+					ownerMemberId: input.session.memberId,
+					sessionId: input.session.id,
+					repository: input.session.repository,
+					filePath: input.filePath,
+					silent: true,
+					decidedAt: new Date().toISOString(),
+				})
+			)
+				recorded += 1;
+		return recorded;
+	}
+
+	/**
+	 * The decisions ledger for this viewer. Admins see everything; a member sees
+	 * the decisions made on their behalf and the company's recorded decisions.
+	 */
+	async listDecisions(access: AccessScope) {
+		const store = this.store.decisions;
+
+		if (!store || access.kind === "agent")
+			return { decisions: [], needsYou: 0 };
+
+		// Decisions the nightly run or a person wrote into Knowledge under /decisions.
+		const index = await this.contextIndex(access);
+		const readable = new Set(
+			[...index.files, ...index.facts].map((entry) => entry.id),
+		);
+
+		for (const entry of await this.store.listContextEntries())
+			if (
+				entry.path.startsWith("/decisions/") &&
+				entry.lifecycleState === "accepted" &&
+				!entry.sourceRef.startsWith("panini:decision:")
+			)
+				await store.record({
+					sourceKind: "record",
+					sourceKey: `context:${entry.id}`,
+					title: entry.title,
+					category: "From chat and code review",
+					statement:
+						entry.kind === "file"
+							? entry.body
+							: String(entry.value),
+					decidedBy: "Team",
+					contextEntryId: entry.id,
+					silent: false,
+					decidedAt: entry.effectiveFrom,
+				});
+
+		const members = new Map(
+			(await this.store.listMembers()).map((member) => [
+				member.id,
+				member.displayName,
+			]),
+		);
+		const me = access.kind === "member" ? access.memberId : null;
+		const decisions = (await store.list())
+			.filter(
+				(decision) =>
+					access.kind === "admin" ||
+					decision.ownerMemberId === me ||
+					(decision.contextEntryId !== null &&
+						readable.has(decision.contextEntryId)),
+			)
+			.map((decision) => ({
+				...decision,
+				ownerName: decision.ownerMemberId
+					? (members.get(decision.ownerMemberId) ?? null)
+					: null,
+				mine: me !== null && decision.ownerMemberId === me,
+			}));
+
+		return {
+			decisions,
+			needsYou: decisions.filter(
+				(decision) =>
+					decision.silent &&
+					decision.ownerState === "unseen" &&
+					(me === null || decision.mine),
+			).length,
+		};
+	}
+
+	/** The owner (or an admin) acknowledges or overrides a decision. */
+	async setDecisionState(
+		id: string,
+		state: "acknowledged" | "overridden" | "unseen",
+		note: string | null,
+		actor: string,
+		access: AccessScope,
+	) {
+		const decision = await this.store.decisions?.get(id);
+
+		if (
+			!decision ||
+			access.kind === "agent" ||
+			(access.kind === "member" &&
+				decision.ownerMemberId !== access.memberId)
+		)
+			throw new DomainError("Decision not found.", "NOT_FOUND");
+
+		const saved = await this.store.decisions!.setOwnerState(
+			id,
+			state,
+			note,
+			actor,
+		);
+
+		await this.store.appendAuditEvent({
+			actor,
+			action: `decision.${state}`,
+			targetType: "decision",
+			targetId: id,
+			sourceEventId: null,
+			proposalId: null,
+			details: note ? { note } : {},
+		});
+		return saved;
+	}
+
+	/** The code an agent session changed, for people who oversee that agent. */
+	async sessionEdits(sessionId: string, access: AccessScope) {
+		const session = await this.agents.getSession(sessionId);
+		const allowed = new Set(
+			(await this.overseenAgentProfiles(access)).map(
+				(profile) => profile.id,
+			),
+		);
+
+		if (!session || !allowed.has(session.agentProfileId))
+			throw new DomainError("Session not found.", "NOT_FOUND");
+		return {
+			session: {
+				id: session.id,
+				repository: session.repository,
+				branch: session.branch,
+			},
+			edits:
+				(await this.store.codeEdits?.listForSession(sessionId)) ?? [],
+		};
+	}
+
 	async sessionStory(sessionId: string, access: AccessScope) {
 		const session = await this.agents.getSession(sessionId);
 		const allowed = new Set(
@@ -1866,42 +2139,56 @@ export class TeamLedger {
 					? this.store.listProposals()
 					: Promise.resolve([]),
 			]);
-		const contextRevisions = (
-			await Promise.all(
-				allContextRevisions.map(async (revision) => {
-					const [currentEvidence, previousEvidence] =
-						await Promise.all([
-							acceptedSourceEvents(
-								this.store,
-								revision.current.evidenceIds,
-							),
-							revision.previous
-								? acceptedSourceEvents(
-										this.store,
-										revision.previous.evidenceIds,
-									)
-								: Promise.resolve([]),
-						]);
 
-					if (
-						!canReadContextEntry(
-							access,
-							revision.current,
-							currentEvidence,
+		// Only the newest `limit` visible revisions can appear, so check newest first
+		// and stop once there are enough, instead of checking every revision.
+		const visibleRevision = async (
+			revision: (typeof allContextRevisions)[number],
+		) => {
+			const [currentEvidence, previousEvidence] = await Promise.all([
+				acceptedSourceEvents(this.store, revision.current.evidenceIds),
+				revision.previous
+					? acceptedSourceEvents(
+							this.store,
+							revision.previous.evidenceIds,
 						)
-					)
-						return null;
-					return revision.previous &&
-						!canReadContextEntry(
-							access,
-							revision.previous,
-							previousEvidence,
-						)
-						? { ...revision, previous: null }
-						: revision;
-				}),
-			)
-		).filter((revision) => revision !== null);
+					: Promise.resolve([]),
+			]);
+
+			if (!canReadContextEntry(access, revision.current, currentEvidence))
+				return null;
+			return revision.previous &&
+				!canReadContextEntry(
+					access,
+					revision.previous,
+					previousEvidence,
+				)
+				? { ...revision, previous: null }
+				: revision;
+		};
+
+		const newestRevisions = allContextRevisions
+			.slice()
+			.sort((left, right) =>
+				right.appliedAt.localeCompare(left.appliedAt),
+			);
+		const contextRevisions: NonNullable<
+			Awaited<ReturnType<typeof visibleRevision>>
+		>[] = [];
+
+		for (
+			let start = 0;
+			start < newestRevisions.length && contextRevisions.length < limit;
+			start += limit
+		)
+			for (const revision of await Promise.all(
+				newestRevisions
+					.slice(start, start + limit)
+					.map(visibleRevision),
+			))
+				if (revision && contextRevisions.length < limit)
+					contextRevisions.push(revision);
+
 		const visibleTasks = await this.visibleAcceptedTasks(tasks, access);
 		const historySafeTasks = (
 			await Promise.all(

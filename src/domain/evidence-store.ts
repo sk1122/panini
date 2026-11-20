@@ -340,6 +340,7 @@ export interface EvidenceStore {
 	reconcileUnknownModelCallAtReservedBound(
 		callId: string,
 	): Promise<ModelCall>;
+	listUnknownModelCalls(budgetId: string): Promise<ModelCall[]>;
 	listModelCalls(runId: string): Promise<ModelCall[]>;
 	getModelCallResponseByKey(logicalCallKey: string): Promise<{
 		call: ModelCall;

@@ -848,7 +848,12 @@ Separate requested work, attempts, output revisions and source reports. Use reco
 				if (saved?.call.state === "succeeded" && saved.response) {
 					data = saved.response as unknown as typeof data;
 				} else {
-					if (saved && saved.call.state !== "reserved")
+					// A failed call is settled and charged, so it can be tried again as a new attempt.
+					const retry =
+						saved?.call.state === "failed" &&
+						saved.call.attempt < 5;
+
+					if (saved && saved.call.state !== "reserved" && !retry)
 						throw new Error(
 							"Observation provider result is unsettled; do not dispatch again",
 						);
@@ -858,7 +863,7 @@ Separate requested work, attempts, output revisions and source reports. Use reco
 						runId: run.id,
 						purpose: "observe",
 						logicalCallKey,
-						attempt: 1,
+						attempt: retry ? saved.call.attempt + 1 : 1,
 						provider: "openai",
 						model: this.options.model,
 						requestHash: contentHash(request),
@@ -911,17 +916,21 @@ Separate requested work, attempts, output revisions and source reports. Use reco
 						}
 						data = (await response.json()) as typeof data;
 					} catch (error) {
+						// The provider answered with an error status, so nothing was billed.
+						// Only a lost connection or timeout leaves the cost unknown.
+						const rejected = providerError !== null;
+
 						await store.settleModelCall({
 							callId,
-							state: "unknown",
+							state: rejected ? "failed" : "unknown",
 							providerRequestId: null,
 							resolvedModelVersion: null,
-							inputTokens: null,
-							cachedInputTokens: null,
-							outputTokens: null,
+							inputTokens: rejected ? 0 : null,
+							cachedInputTokens: rejected ? 0 : null,
+							outputTokens: rejected ? 0 : null,
 							embeddingItems: null,
-							costUsd: null,
-							costBasis: "unknown",
+							costUsd: rejected ? "0" : null,
+							costBasis: rejected ? "known_zero" : "unknown",
 							errorCode: "provider_error",
 							response: providerError,
 							finishedAt: new Date().toISOString(),

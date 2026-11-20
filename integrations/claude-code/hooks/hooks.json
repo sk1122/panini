@@ -43,6 +43,18 @@
 					}
 				]
 			}
+		],
+		"PostToolUse": [
+			{
+				"matcher": "Edit|MultiEdit|Write",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/panini-hook.mjs",
+						"timeout": 5
+					}
+				]
+			}
 		]
 	}
 }

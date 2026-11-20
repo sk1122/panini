@@ -179,6 +179,22 @@ export class GithubAppClient {
 		return result.token;
 	}
 
+	/** Every installation of this app, read with the app's own key. */
+	async appInstallations(): Promise<GithubInstallation[]> {
+		const all: GithubInstallation[] = [];
+
+		for (let page = 1; page <= 20; page += 1) {
+			const batch = await this.request<GithubInstallation[]>(
+				`/app/installations?per_page=100&page=${page}`,
+				githubAppJwt(this.credentials),
+			);
+
+			all.push(...batch);
+			if (batch.length < 100) break;
+		}
+		return all;
+	}
+
 	async installationRepositories(token: string): Promise<GithubRepository[]> {
 		return this.paginate<GithubRepository>(
 			"/installation/repositories",

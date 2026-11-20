@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -118,6 +118,20 @@ async function main() {
 	const identity = new IdentityService(databaseUrl, DEFAULT_ORGANIZATION_ID);
 	let seededTasks = 0;
 
+	// A new key cannot read a database written with an old one. Refuse rather
+	// than start a workspace whose data is unreadable.
+	if (created && (await identity.isConfigured())) {
+		await identity.close();
+		await rm(join(home, "state.json"), { force: true });
+		await database?.stop().catch(() => undefined);
+		console.error(
+			`This database already has a Panini workspace, but ${join(home, "state.json")} is missing.\n` +
+				"That file holds the encryption key for the data. Restore it from a backup and start again,\n" +
+				"or use a new, empty database (--database-url) to start fresh.",
+		);
+		process.exit(1);
+	}
+
 	try {
 		if (!(await identity.isConfigured())) {
 			const grant = await identity.bootstrap({
@@ -179,10 +193,31 @@ async function main() {
 		AUTO_MIGRATE: "false",
 		LOG_LEVEL: process.env.LOG_LEVEL ?? "warn",
 	};
-	const server = run("main.js");
-	// The worker runs the nightly job once a model is chosen in Settings.
-	const worker = run("worker.js");
+	// Exit code 75 means "restart me" (new connector settings); anything else stops Panini.
+	const children: Record<string, ReturnType<typeof run>> = {};
+	let stopping = false;
 
+	const keep = (name: string, entry: string) => {
+		const child = run(entry);
+
+		children[name] = child;
+		child.once("exit", (code) => {
+			if (stopping) return;
+			if (code === 75) return void keep(name, entry);
+			if (name === "server") void stop(code ?? 0);
+		});
+	};
+
+	const stop = async (code = 0) => {
+		stopping = true;
+		for (const child of Object.values(children)) child.kill("SIGTERM");
+		await database?.stop().catch(() => undefined);
+		process.exit(code);
+	};
+
+	keep("server", "main.js");
+	// The worker runs the nightly job and connectors.
+	keep("worker", "worker.js");
 	console.log(`\nPanini is running at ${url}/app/home`);
 	if (created) {
 		console.log(
@@ -199,20 +234,8 @@ async function main() {
 	console.log(`Connect an agent: npx panini-work connect --url ${url}`);
 	console.log("Stop with Ctrl+C. Your data stays in", home);
 
-	const stop = async () => {
-		server.kill("SIGTERM");
-		worker.kill("SIGTERM");
-		await database?.stop().catch(() => undefined);
-		process.exit(0);
-	};
-
 	process.once("SIGINT", () => void stop());
 	process.once("SIGTERM", () => void stop());
-	server.once("exit", async (code) => {
-		worker.kill("SIGTERM");
-		await database?.stop().catch(() => undefined);
-		process.exit(code ?? 0);
-	});
 }
 
 await main();

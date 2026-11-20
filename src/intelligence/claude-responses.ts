@@ -188,7 +188,8 @@ function toResponses(message: Anthropic.Message): Item {
 
 /** A fetch that answers `/responses` requests with Claude. */
 export function claudeFetcher(apiKey: string): typeof fetch {
-	const client = new Anthropic({ apiKey });
+	// Long runs hit rate limits; the SDK waits as long as Claude asks before retrying.
+	const client = new Anthropic({ apiKey, maxRetries: 8 });
 
 	return async (input, init) => {
 		const url = String(input instanceof Request ? input.url : input);

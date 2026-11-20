@@ -1,3 +1,4 @@
+import { applyStoredConnectors } from "../connectors/credentials.js";
 import {
 	evidencePipelineMode,
 	loadConfig,
@@ -60,6 +61,16 @@ export async function createPaniniCore(
 	const store: LedgerStore = new PostgresLedgerStore(
 		config.databaseUrl,
 		config.contentEncryptionKey,
+	);
+
+	// Connectors an admin added in the app fill in what the environment leaves unset.
+	applyStoredConnectors(
+		config,
+		(await store.connectorCredentials?.all().catch(() => ({}))) ?? {},
+		(config.publicUrl ?? `http://127.0.0.1:${config.port}`).replace(
+			/\/$/,
+			"",
+		),
 	);
 
 	const externalFetch = (

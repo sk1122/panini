@@ -180,19 +180,20 @@ describe("app shell", () => {
 		expect(shell).toContain("Example &lt;Company&gt;");
 		expect(shell).toContain("Panini");
 		expect(shell).toContain(
-			'class="brand-mark" lang="sa" aria-hidden="true">प</span>',
+			'class="brand-mark" aria-hidden="true"><i class="ph-fill ph-flower-lotus"></i></span>',
 		);
 		expect(shell).toContain('data-view="projects"');
 		expect(shell).toContain('data-view="work"');
 		expect(shell).toContain('data-view="context"');
 		expect(shell).toContain('data-view="people"');
-		expect(shell).toContain('data-view="timeline"');
+		// Changes and Timeline are one Activity page; the timeline view stays reachable by its address.
+		expect(shell).toContain('data-view="review"');
+		expect(shell).toContain("<b>Activity</b>");
+		expect(shell).not.toContain("<b>Timeline</b>");
 		expect(shell).toContain('href="/app/projects"');
 		expect(shell).toContain('href="/app/tasks"');
 		expect(shell).toContain('href="/app/context"');
 		expect(shell).toContain('href="/app/people"');
-		expect(shell).toContain('href="/app/timeline"');
-		expect(shell).toContain("<b>Timeline</b>");
 		expect(shell).toContain("<h1>Timeline</h1>");
 		expect(shell).not.toContain(">Lineage<");
 		expect(shell).not.toContain('id="connection-title"');
@@ -241,7 +242,7 @@ describe("app shell", () => {
 		expect(shell).toContain('id="agent-form"');
 		expect(shell).toContain('id="setup-dialog"');
 		expect(shell).toContain(
-			'href="/assets/phosphor.css" nonce="test-nonce"',
+			'href="/assets/phosphor.css?v=2" nonce="test-nonce"',
 		);
 		expect(shell).toContain('class="ph ph-check-square"');
 		expect(shell).not.toMatch(/\sstyle=/i);

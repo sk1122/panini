@@ -128,19 +128,24 @@ async function installClaudeHooks(hookTarget: string) {
 	const settingsFile = join(homedir(), ".claude", "settings.json");
 	const settings = existsSync(settingsFile)
 		? (JSON.parse(await readFile(settingsFile, "utf8")) as {
-				hooks?: Record<string, { hooks: { command: string }[] }[]>;
+				hooks?: Record<
+					string,
+					{ matcher?: string; hooks: { command: string }[] }[]
+				>;
 			})
 		: {};
 	const command = `node ${JSON.stringify(hookTarget)}`;
 	let changed = false;
 
 	settings.hooks ??= {};
-	for (const event of [
-		"SessionStart",
-		"SessionEnd",
-		"StopFailure",
-		"TaskCompleted",
-	]) {
+	for (const [event, matcher] of [
+		["SessionStart"],
+		["SessionEnd"],
+		["StopFailure"],
+		["TaskCompleted"],
+		// The code each session changes.
+		["PostToolUse", "Edit|MultiEdit|Write"],
+	] as [string, string?][]) {
 		const entries = (settings.hooks[event] ??= []);
 
 		if (
@@ -151,6 +156,7 @@ async function installClaudeHooks(hookTarget: string) {
 			)
 		) {
 			entries.push({
+				...(matcher ? { matcher } : {}),
 				hooks: [{ type: "command", command, timeout: 5 } as never],
 			});
 			changed = true;
@@ -230,12 +236,18 @@ async function main() {
 
 	const token = String(approved.secret);
 	const mcpUrl = String(approved.mcpUrl);
-	const saved = join(pantry, "agent.json");
+	// One saved connection per agent type, so Claude Code, Codex and Hermes on
+	// one machine each keep their own profile and token.
+	const saved = join(pantry, `agent-${harness}.json`);
+	const keychainAccount = `${url}#${harness}`;
 	// On macOS the token lives in the login keychain; elsewhere in a file only you can read.
 	const inKeychain =
 		process.platform === "darwin" &&
 		!process.argv.includes("--no-keychain") &&
-		saveToKeychain(url, token);
+		saveToKeychain(keychainAccount, token);
+	const readToken = inKeychain
+		? `$(security find-generic-password -s work.panini.agent -a "${keychainAccount}" -w)`
+		: `$(node -e 'console.log(require(${JSON.stringify(saved)}).token)')`;
 
 	await mkdir(pantry, { recursive: true, mode: 0o700 });
 	await writeFile(
@@ -243,7 +255,9 @@ async function main() {
 		JSON.stringify(
 			{
 				url,
-				...(inKeychain ? { tokenStore: "keychain" } : { token }),
+				...(inKeychain
+					? { tokenStore: "keychain", keychainAccount }
+					: { token }),
 				profileId: approved.profileId,
 				profileName: approved.profileName,
 				harness,
@@ -287,16 +301,18 @@ async function main() {
 		console.log(`Session hooks: ${helpers.hooks}.`);
 	} else if (harness === "codex" && has("codex")) {
 		console.log("Add Panini to Codex with:");
+		console.log(`  export PANINI_CODEX_TOKEN=${readToken}`);
 		console.log(
-			inKeychain
-				? "  export PANINI_AGENT_TOKEN=$(security find-generic-password -s work.panini.agent -a " +
-						url +
-						" -w)"
-				: `  export PANINI_AGENT_TOKEN=$(node -e 'console.log(require(${JSON.stringify(saved)}).token)')`,
+			`  codex mcp add panini --url ${mcpUrl} --bearer-token-env-var PANINI_CODEX_TOKEN`,
 		);
+	} else if (harness === "hermes") {
+		console.log("Add this to ~/.hermes/config.yaml under mcp_servers:");
 		console.log(
-			`  codex mcp add panini --url ${mcpUrl} --bearer-token-env-var PANINI_AGENT_TOKEN`,
+			`  panini:\n    url: "${mcpUrl}"\n    headers:\n      Authorization: "Bearer \${PANINI_HERMES_TOKEN}"`,
 		);
+		console.log("Then start Hermes with the token in its environment:");
+		console.log(`  export PANINI_HERMES_TOKEN=${readToken}`);
+		console.log("  hermes mcp test panini && hermes chat");
 	} else {
 		console.log(
 			`Point your MCP client at ${mcpUrl} with the header "Authorization: Bearer <token from ${saved}>".`,

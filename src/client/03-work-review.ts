@@ -276,26 +276,150 @@ function changeSummary(change) {
 	return fields.length ? "Changed " + fields.join(", ") : "Changed task";
 }
 
+/** Who made a change, in words a person would use. */
+function actorName(actor) {
+	const value = String(actor || "");
+
+	if (/observation-agent|reconcile|nightly/i.test(value))
+		return "Nightly run";
+	return who(value);
+}
+
 function changeRow(change) {
+	const task = String(change.kind).startsWith("task");
+
 	return (
 		'<article class="change-row' +
 		(change.undone ? " undone" : "") +
-		'"><div><strong>' +
-		esc(changeSummary(change)) +
-		": " +
-		esc(change.title) +
-		"</strong><span>" +
-		esc(who(change.by)) +
+		'"' +
+		(change.why ? ' title="' + esc(who(change.why)) + '"' : "") +
+		'><i class="ph ph-' +
+		(change.kind === "task_create"
+			? "plus-circle"
+			: task
+				? "check-square"
+				: "book-open-text") +
+		' change-icon" aria-hidden="true"></i><p><b>' +
+		esc(
+			(change.summaries || [changeSummary(change)])
+				.map((text, i) => (i ? text.toLowerCase() : text))
+				.join(", "),
+		) +
+		"</b> " +
+		esc(cleanTitle(change.title)) +
+		(change.repeat
+			? ' <span class="repeat">×' + change.repeat + "</span>"
+			: "") +
+		'</p><span class="change-meta">' +
+		esc(actorName(change.by)) +
 		" · " +
-		esc(formatDate(change.at)) +
-		(change.why ? " · " + esc(who(change.why)) : "") +
-		"</span></div>" +
+		esc(
+			new Date(change.at).toLocaleTimeString([], {
+				hour: "numeric",
+				minute: "2-digit",
+			}),
+		) +
+		"</span>" +
 		(change.undone
-			? "<em>Undone</em>"
+			? '<em class="pill">Undone</em>'
 			: '<button class="button quiet small" data-undo-change="' +
 				esc(change.proposalId) +
-				'">Undo</button>') +
+				'">' +
+				(change.repeat ? "Undo latest" : "Undo") +
+				"</button>") +
 		"</article>"
+	);
+}
+
+const activityView = { filter: "all", limit: 50 };
+
+function activityMarkup() {
+	const keep = {
+		all: () => true,
+		tasks: (change) => String(change.kind).startsWith("task"),
+		knowledge: (change) => !String(change.kind).startsWith("task"),
+		undone: (change) => change.undone,
+	}[activityView.filter];
+	const changes = state.changes.filter(keep);
+	// One row per thing changed each day, listing what changed and how often.
+	const folded = [];
+	const index = new Map();
+
+	for (const change of changes) {
+		const key =
+			new Date(change.at).toDateString() +
+			"|" +
+			change.title +
+			"|" +
+			Boolean(change.undone);
+		const row = index.get(key);
+
+		if (row) {
+			row.repeat = (row.repeat || 1) + 1;
+			if (!row.summaries.includes(changeSummary(change)))
+				row.summaries.push(changeSummary(change));
+		} else {
+			const first = { ...change, summaries: [changeSummary(change)] };
+
+			index.set(key, first);
+			folded.push(first);
+		}
+	}
+
+	const shown = folded.slice(0, activityView.limit);
+	const days = new Map();
+
+	for (const change of shown) {
+		const day = new Date(change.at).toLocaleDateString(undefined, {
+			weekday: "long",
+			day: "numeric",
+			month: "long",
+		});
+
+		days.set(day, [...(days.get(day) || []), change]);
+	}
+
+	const filters = [
+		["all", "All"],
+		["tasks", "Tasks"],
+		["knowledge", "Knowledge"],
+		["undone", "Undone"],
+	]
+		.map(
+			([key, label]) =>
+				'<button type="button" class="seg' +
+				(activityView.filter === key ? " on" : "") +
+				'" data-activity-filter="' +
+				key +
+				'">' +
+				label +
+				"</button>",
+		)
+		.join("");
+
+	return (
+		'<div class="activity-bar"><div class="segmented">' +
+		filters +
+		'</div><span class="panel-count">' +
+		changes.length +
+		(changes.length === 1 ? " change" : " changes") +
+		"</span></div>" +
+		([...days]
+			.map(
+				([day, items]) =>
+					'<section class="panel activity-day"><header><h2>' +
+					esc(day) +
+					' <span class="panel-count">' +
+					items.length +
+					"</span></h2></header>" +
+					items.map(changeRow).join("") +
+					"</section>",
+			)
+			.join("") ||
+			'<div class="panel-empty">No changes here yet.</div>') +
+		(folded.length > shown.length
+			? '<button type="button" class="button quiet activity-more" data-activity-more>Show more</button>'
+			: "")
 	);
 }
 
@@ -315,10 +439,7 @@ function renderProposals() {
 			projectProposals.map(projectProposalCard).join("") +
 			proposals.map(proposalCard).join("")
 		: "";
-	byId("recent-changes").innerHTML =
-		'<h2 class="changes-heading">Recent changes</h2>' +
-		(state.changes.map(changeRow).join("") ||
-			'<div class="empty"><strong>No changes yet</strong><span>When an agent or the nightly run changes a task or context, it shows here with an Undo button.</span></div>');
+	byId("recent-changes").innerHTML = activityMarkup();
 	byId("review-count").textContent = String(count);
 	byId("review-count").hidden = count === 0;
 	byId("proposal-metric").textContent =
@@ -439,6 +560,7 @@ function renderProjects() {
 	byId("accepted-task-metric").textContent = String(tasks.length);
 	byId("decision-metric").textContent = String(decisions.length);
 	byId("project-decision-count").textContent = String(decisions.length);
+	byId("project-decisions-section").hidden = decisions.length === 0;
 
 	if (!projects.some((project) => project.id === state.selectedProjectId))
 		state.selectedProjectId = projects[0]?.id || null;
@@ -497,7 +619,7 @@ function renderProjects() {
 					'<button class="project-task" data-task="' +
 					esc(task.id) +
 					'"><span><strong>' +
-					esc(task.title) +
+					esc(cleanTitle(task.title)) +
 					"</strong><small>" +
 					esc(task.description || "No description recorded.") +
 					"</small></span><em>" +
@@ -511,7 +633,7 @@ function renderProjects() {
 			.join("");
 
 		byId("project-focus").innerHTML =
-			'<header><span class="eyebrow">Accepted project</span><h2>' +
+			"<header><h2>" +
 			esc(selected.name) +
 			"</h2><p>" +
 			esc(selected.outcome || "No accepted outcome recorded.") +
@@ -649,7 +771,7 @@ function renderCompany() {
 				'<button class="company-row danger-row" data-task="' +
 				esc(task.id) +
 				'"><i class="ph ph-warning" aria-hidden="true"></i><span><strong>' +
-				esc(task.title) +
+				esc(cleanTitle(task.title)) +
 				"</strong><small>" +
 				esc(canonicalProjectName(task) || "No Project") +
 				"</small></span><em>blocked</em></button>",
@@ -766,6 +888,13 @@ function renderPeople() {
 				),
 		);
 
+	people.sort(
+		(a, b) =>
+			b.currentWork.length +
+				agentsOf(b.member.id).length -
+				(a.currentWork.length + agentsOf(a.member.id).length) ||
+			a.member.displayName.localeCompare(b.member.displayName),
+	);
 	byId("people-count").textContent = String(people.length);
 	byId("people-metric").textContent =
 		people.length + (people.length === 1 ? " person" : " people");
@@ -788,7 +917,7 @@ function renderPeople() {
 							'<button data-task="' +
 							esc(task.id) +
 							'"><span>' +
-							esc(task.title) +
+							esc(cleanTitle(task.title)) +
 							"</span><small>" +
 							esc(task.status.replaceAll("_", " ")) +
 							"</small></button>",
@@ -811,69 +940,116 @@ function renderPeople() {
 							'<button data-task="' +
 							esc(task.id) +
 							'"><span>' +
-							esc(task.title) +
+							esc(cleanTitle(task.title)) +
 							"</span><small>" +
 							esc(task.status.replaceAll("_", " ")) +
 							"</small></button>",
 					)
 					.join("");
 
+				const agents = agentsOf(person.member.id);
+				const live = agents.filter(
+					(agent) => agent.status === "working",
+				);
+				const counts = [
+					person.currentWork.length
+						? person.currentWork.length + " open"
+						: "",
+					agents.length
+						? agents.length +
+							(agents.length === 1 ? " agent" : " agents")
+						: "",
+				]
+					.filter(Boolean)
+					.join(" · ");
+				const agentRows = agents
+					.map(
+						(agent) =>
+							'<button data-go-view="agents"><span>' +
+							esc(agent.name) +
+							"</span><small>" +
+							esc(
+								agent.status === "working"
+									? "on " + agent.currentTask.title
+									: agent.status === "never_connected"
+										? "not connected yet"
+										: "last active " +
+											ago(agent.lastActiveAt),
+							) +
+							"</small></button>",
+					)
+					.join("");
+
 				return (
-					'<article class="person-card"><header><span class="person-avatar">' +
+					'<article class="person-row"><button type="button" class="person-open" data-person-expand aria-expanded="false"><span class="person-avatar">' +
 					esc(person.member.displayName.slice(0, 1).toUpperCase()) +
-					"</span><div><h2>" +
+					'</span><span class="agent-name"><strong>' +
 					esc(person.member.displayName) +
-					"</h2><p>" +
+					"</strong><small>" +
 					esc(person.member.role) +
-					'</p></div></header><div class="person-section"><small>Current work</small><div class="person-work">' +
-					(workRows ||
-						'<span class="muted-copy">Nothing in progress.</span>') +
-					"</div></div>" +
-					(historicalRows
-						? '<div class="person-section"><small>Earlier work</small><div class="person-work">' +
-							historicalRows +
-							"</div></div>"
+					"</small></span>" +
+					(live.length
+						? '<span class="agent-state live"><span class="dot"></span>' +
+							esc(
+								live[0].name +
+									" on " +
+									live[0].currentTask.title,
+							) +
+							"</span>"
+						: person.currentWork.length
+							? '<span class="agent-state">' +
+								esc(person.currentWork[0].title) +
+								"</span>"
+							: '<span class="agent-state muted">Nothing open</span>') +
+					'<span class="agent-week-short">' +
+					esc(counts) +
+					'</span><i class="ph ph-caret-down person-caret" aria-hidden="true"></i></button>' +
+					'<div class="agent-detail person-detail" hidden>' +
+					(workRows
+						? '<h3>Open work</h3><div class="person-work">' +
+							workRows +
+							"</div>"
 						: "") +
-					(agentsOf(person.member.id).length
-						? '<div class="person-section"><small>Agents</small><div class="person-work">' +
-							agentsOf(person.member.id)
-								.map(
-									(agent) =>
-										'<button data-go-view="agents"><span><span class="session-dot ' +
-										esc(
-											agent.status === "working"
-												? "active"
-												: "",
-										) +
-										'"></span>' +
-										esc(agent.name) +
-										"</span><small>" +
-										esc(
-											agent.status === "working"
-												? "on " +
-														agent.currentTask.title
-												: agent.status ===
-													  "never_connected"
-													? "not connected yet"
-													: "last active " +
-														ago(agent.lastActiveAt),
-										) +
-										"</small></button>",
-								)
-								.join("") +
-							"</div></div>"
+					(historicalRows
+						? '<h3>Earlier work</h3><div class="person-work">' +
+							historicalRows +
+							"</div>"
+						: "") +
+					(agentRows
+						? '<h3>Agents</h3><div class="person-work">' +
+							agentRows +
+							"</div>"
 						: "") +
 					(identityRows
-						? '<details><summary>Linked accounts</summary><div class="agent-grants">' +
+						? '<h3>Accounts</h3><div class="person-accounts">' +
 							identityRows +
-							"</div></details>"
+							"</div>"
 						: "") +
-					"</article>"
+					"</div></article>"
 				);
 			})
 			.join("") ||
 		'<div class="empty agent-empty"><strong>No people yet</strong><span>Invite your team from Settings.</span></div>';
 }
+
+byId("people").addEventListener("click", (event) => {
+	const target = event.target as AppElement;
+	const open = target.closest<AppElement>("[data-person-expand]");
+	const task = target.closest<AppElement>("[data-task]");
+
+	if (task) {
+		void openTaskDetail(task.dataset.task).catch(showError);
+		return;
+	}
+	if (!open) return;
+
+	const detail = open
+		.closest("article")
+		.querySelector<AppElement>(".person-detail");
+
+	detail.hidden = !detail.hidden;
+	open.setAttribute("aria-expanded", String(!detail.hidden));
+});
 
 function historyMarkup(items) {
 	return items

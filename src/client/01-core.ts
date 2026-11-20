@@ -12,6 +12,7 @@ type AppElement = HTMLElement &
 
 const state = {
 	changes: [],
+	decisions: { decisions: [], needsYou: 0 },
 	home: null,
 	reconcile: null,
 	agentSummary: null,
@@ -267,13 +268,7 @@ function renderAccount() {
 
 function applyRoleControls() {
 	renderAccount();
-	for (const id of [
-		"new-context",
-		"new-mapping",
-		"sync",
-		"connect-github",
-		"new-integration",
-	]) {
+	for (const id of ["new-context", "new-mapping", "sync"]) {
 		byId(id).hidden = id === "new-context" ? !canReview() : !isAdmin();
 	}
 	document
@@ -840,3 +835,34 @@ const statusForLane = {
 };
 let draggedTaskId = null;
 let boardDragEndedAt = 0;
+
+/** Titles without chat IDs; the source link already points at the message. */
+function cleanTitle(title) {
+	return String(title ?? "")
+		.replace(
+			/\s*\((?:per |from )?Slack(?: [CG][A-Z0-9]{6,})?,? thread[^)]*\)/gi,
+			"",
+		)
+		.replace(/\s*\(thread \d{9,}[^)]*\)/gi, "")
+		.trim();
+}
+
+let toastTimer = 0;
+
+/** A short confirmation with one optional action; it hides itself. */
+function showToast(text, actionLabel = "", onAction = null) {
+	const toast = byId("toast");
+
+	byId("toast-copy").textContent = text;
+	byId("toast-action").textContent = actionLabel;
+	byId("toast-action").hidden = !actionLabel;
+	byId("toast-action").onclick = () => {
+		toast.hidden = true;
+		onAction?.();
+	};
+	toast.hidden = false;
+	window.clearTimeout(toastTimer);
+	toastTimer = window.setTimeout(() => {
+		toast.hidden = true;
+	}, 7000);
+}

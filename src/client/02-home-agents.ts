@@ -82,7 +82,7 @@ function taskCard(task) {
 		esc(task.priority) +
 		' priority"></span></div>' +
 		"<h4>" +
-		esc(task.title) +
+		esc(cleanTitle(task.title)) +
 		"</h4>" +
 		claim +
 		overlay +
@@ -113,6 +113,20 @@ const ago = (value) => {
 	return hours < 48 ? hours + " h ago" : formatDate(value, false);
 };
 
+const statusMark = {
+	in_progress:
+		'<i class="ph-fill ph-circle-half st ip" aria-hidden="true"></i>',
+	review: '<i class="ph-fill ph-circle-half st ip" aria-hidden="true"></i>',
+	blocked:
+		'<i class="ph-fill ph-warning-circle st warn" aria-hidden="true"></i>',
+	done: '<i class="ph-fill ph-check-circle st done" aria-hidden="true"></i>',
+};
+
+const statusLabel = (status) =>
+	String(status || "")
+		.replaceAll("_", " ")
+		.replace(/^./, (c) => c.toUpperCase());
+
 function renderHome() {
 	const home = state.home;
 
@@ -123,101 +137,188 @@ function renderHome() {
 	}
 
 	const needs = home.needs;
-	const total = needs.observedCount + needs.proposalCount + needs.noteCount;
+	const total =
+		needs.observedCount +
+		needs.proposalCount +
+		needs.noteCount +
+		(state.decisions?.needsYou ? 1 : 0);
+	const tasks = state.board?.tasks ?? [];
+	const now = Date.now();
+	const day = 86_400_000;
+
+	const age = (task) => now - new Date(task.updatedAt).valueOf();
+
+	const doneThisWeek = tasks.filter(
+		(task) => task.status === "done" && age(task) < 7 * day,
+	).length;
+	const stuck = tasks.filter(
+		(task) => task.status === "in_progress" && age(task) > 14 * day,
+	).length;
+	const me = state.account?.identity?.displayName;
+	const mine = tasks
+		.filter((task) => me && task.owner === me && task.status !== "done")
+		.slice(0, 6);
 
 	byId("home-count").hidden = total === 0;
 	byId("home-count").textContent = String(total);
-	byId("home-freshness").textContent =
-		total === 0 ? "Nothing waiting" : total + " waiting";
+	byId("home-date").textContent = new Date().toLocaleDateString(undefined, {
+		weekday: "long",
+		day: "numeric",
+		month: "long",
+	});
 	byId("home-accept-all").hidden = needs.observedCount === 0;
+	byId("home-needs-count").textContent = total ? String(total) : "";
+	byId("home-mine-count").textContent = mine.length
+		? String(mine.length)
+		: "";
+	byId("home-working-count").textContent = home.workingNow.length
+		? String(home.workingNow.length)
+		: "";
+
+	const stat = (icon, label, value, extra = "", view = "") =>
+		'<button type="button" class="stat ' +
+		extra +
+		'"' +
+		(view ? ' data-go-view="' + view + '"' : "") +
+		'><span><i class="ph ph-' +
+		icon +
+		'" aria-hidden="true"></i>' +
+		label +
+		"</span><strong>" +
+		value +
+		"</strong></button>";
+
+	byId("home-stats").innerHTML =
+		stat("hand", "Needs you", total) +
+		stat(
+			"lightning",
+			"Agents working",
+			home.workingNow.length,
+			"",
+			"agents",
+		) +
+		stat("check-circle", "Done this week", doneThisWeek, "", "work") +
+		stat(
+			"hourglass",
+			"Stuck over 2 weeks",
+			stuck,
+			stuck ? "warn" : "",
+			"work",
+		);
+
+	const row = (mark, title, sub, side) =>
+		'<div class="panel-row">' +
+		mark +
+		'<div class="panel-main"><strong>' +
+		title +
+		"</strong>" +
+		(sub ? "<span>" + sub + "</span>" : "") +
+		"</div>" +
+		(side || "") +
+		"</div>";
+
+	const needMark = (icon) =>
+		'<i class="ph-fill ph-' + icon + ' st need" aria-hidden="true"></i>';
 
 	const observed = needs.observed
-		.map(
-			(task) =>
-				'<div class="activity-row"><strong><span class="standing-chip observed">observed</span> ' +
-				esc(task.title) +
-				"</strong><span>" +
-				esc(
-					[task.project, task.status.replaceAll("_", " ")]
-						.filter(Boolean)
-						.join(" · "),
-				) +
-				"</span>" +
-				'<div class="row-actions"><button class="button quiet small" data-confirm-task="' +
-				esc(task.id) +
-				'">Accept</button><button class="button quiet small" data-dismiss-task="' +
-				esc(task.id) +
-				'">Dismiss</button></div></div>',
+		.map((task) =>
+			row(
+				needMark("eye"),
+				esc(cleanTitle(task.title)),
+				"Spotted in chat" +
+					(task.project ? " · " + esc(task.project) : ""),
+				'<div class="row-actions"><button class="button quiet small" data-dismiss-task="' +
+					esc(task.id) +
+					'">Dismiss</button><button class="button primary small" data-confirm-task="' +
+					esc(task.id) +
+					'">Accept</button></div>',
+			),
 		)
 		.join("");
 	const proposals = needs.proposalCount
-		? '<div class="activity-row"><strong>' +
-			needs.proposalCount +
-			(needs.proposalCount === 1 ? " proposal" : " proposals") +
-			" to decide</strong><span>" +
-			esc(compact(who(needs.proposals[0]?.rationale || ""), 90)) +
-			'</span><button class="button quiet small" data-go-view="review">Open review</button></div>'
+		? row(
+				needMark("git-pull-request"),
+				needs.proposalCount +
+					(needs.proposalCount === 1
+						? " change to decide"
+						: " changes to decide"),
+				esc(compact(who(needs.proposals[0]?.rationale || ""), 90)),
+				'<button class="button primary small" data-go-view="review">Open</button>',
+			)
 		: "";
 	const notes = needs.notes
-		.map(
-			(note) =>
-				// Show the whole note: you cannot keep or dismiss what you cannot read.
-				'<div class="note-row"><p><span class="standing-chip note">note</span> ' +
-				esc(note.text) +
-				"</p><span>" +
-				esc(who(note.author)) +
-				" · " +
-				esc(ago(note.createdAt)) +
-				"</span>" +
-				'<div class="row-actions"><button class="button quiet small" data-note-state="promoted" data-note="' +
-				esc(note.id) +
-				'">Keep</button><button class="button quiet small" data-note-state="dismissed" data-note="' +
-				esc(note.id) +
-				'">Dismiss</button></div></div>',
+		.map((note) =>
+			// Show the whole note: you cannot keep or dismiss what you cannot read.
+			row(
+				needMark("note"),
+				esc(note.text),
+				esc(who(note.author)) + " · " + esc(ago(note.createdAt)),
+				'<div class="row-actions"><button class="button quiet small" data-note-state="dismissed" data-note="' +
+					esc(note.id) +
+					'">Dismiss</button><button class="button primary small" data-note-state="promoted" data-note="' +
+					esc(note.id) +
+					'">Keep</button></div>',
+			),
 		)
 		.join("");
 
+	const silent = state.decisions?.needsYou || 0;
+	const decided = silent
+		? row(
+				needMark("scales"),
+				silent +
+					(silent === 1
+						? " decision was made without you"
+						: " decisions were made without you"),
+				"By your agents, in code they changed",
+				'<button class="button primary small" data-go-view="decisions">Review</button>',
+			)
+		: "";
+
 	byId("home-needs").innerHTML =
-		proposals + observed + notes ||
-		'<div class="empty"><strong>Nothing needs you</strong><span>Work spotted in chat, changes to decide and team notes show up here.</span></div>';
+		decided + proposals + observed + notes ||
+		'<div class="panel-empty">Nothing needs you.</div>';
+	byId("home-mine").innerHTML =
+		mine
+			.map((task) =>
+				row(
+					statusMark[task.status] ||
+						'<i class="ph ph-circle-dashed st" aria-hidden="true"></i>',
+					'<button type="button" class="link-button" data-task="' +
+						esc(task.id) +
+						'">' +
+						esc(cleanTitle(task.title)) +
+						"</button>",
+					task.project ? esc(task.project) : "",
+					'<span class="pill ' +
+						esc(task.status) +
+						'">' +
+						esc(statusLabel(task.status)) +
+						"</span>",
+				),
+			)
+			.join("") ||
+		'<div class="panel-empty">No open tasks are yours.</div>';
 	byId("home-working").innerHTML =
 		home.workingNow
-			.map(
-				(item) =>
-					'<div class="activity-row"><strong><span class="session-dot ' +
-					esc(item.sessionState) +
-					'"></span>' +
+			.map((item) =>
+				row(
+					'<span class="agent-chip ' +
+						esc(item.sessionState) +
+						'"><i class="ph ph-robot" aria-hidden="true"></i></span>',
+					esc(cleanTitle(item.taskTitle)),
 					esc(item.agentName || "Agent") +
-					"</strong><span>" +
-					esc(item.taskTitle) +
-					(item.inferred ? " · inferred from branch" : "") +
-					"</span><time>" +
-					esc(item.sessionState) +
-					" · " +
-					esc(ago(item.lastSeenAt)) +
-					"</time></div>",
+						(item.inferred ? " · from its branch" : ""),
+					'<time class="panel-side">' +
+						esc(ago(item.lastSeenAt)) +
+						"</time>",
+				),
 			)
 			.join("") ||
-		'<div class="empty"><strong>No agent holds a task</strong><span>Agents appear here when they claim work.</span></div>';
-	byId("home-changed").innerHTML =
-		home.changed
-			.map(
-				(item) =>
-					'<div class="activity-row"><strong>' +
-					esc(item.title) +
-					"</strong><span>" +
-					esc(item.summary) +
-					" · " +
-					esc(recordedBy(String(item.actor || ""))) +
-					"</span><time>" +
-					esc(formatDate(item.occurredAt)) +
-					"</time></div>",
-			)
-			.join("") ||
-		'<div class="empty"><strong>No recent changes</strong><span>Accepted updates appear here.</span></div>';
+		'<div class="panel-empty">No agent is working on a task.</div>';
+	byId("home-changed").innerHTML = "";
 	byId("home-sources").innerHTML = home.sources.length
-		? "Sources: " +
-			home.sources
+		? home.sources
 				.map(
 					(source) =>
 						'<span class="health-state ' +
@@ -229,7 +330,7 @@ function renderHome() {
 						"</span>",
 				)
 				.join(" ")
-		: "No sources connected yet. Agents can still report work and claim tasks.";
+		: "";
 }
 
 async function loadConnect() {
@@ -290,7 +391,7 @@ async function loadConnect() {
 					.join("") +
 				"</select></label>"
 			: "") +
-		'<p class="connect-grants">It can read work and context, claim tasks, report work, propose changes and keep private notes. It cannot read raw sources or accept changes by itself.</p>' +
+		'<p class="connect-grants">It can read work and context, claim tasks, report work, change tasks and context, and keep private notes. Its changes apply at once and can be undone. It cannot read raw sources.</p>' +
 		'<div class="row-actions"><button class="button primary" type="submit">Approve</button><button class="button quiet" type="button" id="connect-deny">Deny</button></div></form>';
 
 	const decide = async (decision) => {
@@ -392,7 +493,7 @@ function agentStatus(agent) {
 	if (agent.status === "working")
 		return (
 			'<p class="agent-now working"><span class="session-dot active"></span>Working on <strong>' +
-			esc(agent.currentTask.title) +
+			esc(cleanTitle(agent.currentTask.title)) +
 			"</strong></p>"
 		);
 	if (agent.status === "active")
@@ -430,6 +531,160 @@ function storyList(story) {
 	);
 }
 
+/** Line diff of two snippets (longest common subsequence), as GitHub-style rows. */
+function lineDiff(before, after) {
+	const a = before === null ? [] : String(before).split("\n");
+	const b = String(after).split("\n");
+
+	if (a.length * b.length > 250_000)
+		return [
+			...a.map((line) => ["-", line]),
+			...b.map((line) => ["+", line]),
+		];
+
+	const table = Array.from({ length: a.length + 1 }, () =>
+		new Array(b.length + 1).fill(0),
+	);
+
+	for (let i = a.length - 1; i >= 0; i--)
+		for (let j = b.length - 1; j >= 0; j--)
+			table[i][j] =
+				a[i] === b[j]
+					? table[i + 1][j + 1] + 1
+					: Math.max(table[i + 1][j], table[i][j + 1]);
+
+	const rows = [];
+	let i = 0;
+	let j = 0;
+
+	while (i < a.length || j < b.length) {
+		if (i < a.length && j < b.length && a[i] === b[j]) {
+			rows.push([" ", a[i]]);
+			i += 1;
+			j += 1;
+		} else if (
+			i < a.length &&
+			(j === b.length || table[i + 1][j] >= table[i][j + 1])
+		) {
+			// Removed lines come before added ones, as on GitHub.
+			rows.push(["-", a[i]]);
+			i += 1;
+		} else {
+			rows.push(["+", b[j]]);
+			j += 1;
+		}
+	}
+	return rows;
+}
+
+function codeEditsMarkup(result) {
+	const edits = result.edits || [];
+
+	if (!edits.length)
+		return '<p class="agent-quiet">No code edits recorded for this session.</p>';
+
+	const files = new Map();
+
+	for (const edit of edits)
+		files.set(edit.filePath, [...(files.get(edit.filePath) || []), edit]);
+
+	const added = edits.reduce((sum, edit) => sum + edit.linesAdded, 0);
+	const removed = edits.reduce((sum, edit) => sum + edit.linesRemoved, 0);
+
+	return (
+		'<section class="code-changes"><h3>Code changed <span class="panel-count">' +
+		files.size +
+		(files.size === 1 ? " file" : " files") +
+		'</span> <span class="diff-add">+' +
+		added +
+		'</span> <span class="diff-del">−' +
+		removed +
+		"</span>" +
+		(result.session?.repository
+			? ' <span class="panel-count">' +
+				esc(result.session.repository) +
+				(result.session.branch
+					? " · " + esc(result.session.branch)
+					: "") +
+				"</span>"
+			: "") +
+		"</h3>" +
+		[...files]
+			.map(
+				([path, fileEdits]) =>
+					'<details class="diff-file"><summary><i class="ph ph-file-code" aria-hidden="true"></i><code>' +
+					esc(path) +
+					'</code><span class="diff-add">+' +
+					fileEdits.reduce((sum, edit) => sum + edit.linesAdded, 0) +
+					'</span><span class="diff-del">−' +
+					fileEdits.reduce(
+						(sum, edit) => sum + edit.linesRemoved,
+						0,
+					) +
+					"</span></summary>" +
+					fileEdits
+						.map(
+							(edit) =>
+								'<div class="diff-hunk"><div class="diff-meta">' +
+								esc(
+									edit.tool === "Write"
+										? "Wrote the file"
+										: "Edited",
+								) +
+								" · " +
+								esc(
+									new Date(edit.createdAt).toLocaleTimeString(
+										[],
+										{
+											hour: "numeric",
+											minute: "2-digit",
+										},
+									),
+								) +
+								(edit.truncated ? " · cut to fit" : "") +
+								'</div><pre class="diff">' +
+								lineDiff(edit.before, edit.after)
+									.map(
+										([sign, line]) =>
+											'<span class="dl ' +
+											(sign === "+"
+												? "add"
+												: sign === "-"
+													? "del"
+													: "ctx") +
+											'"><b>' +
+											sign +
+											"</b>" +
+											esc(line) +
+											"</span>",
+									)
+									.join("") +
+								"</pre></div>",
+						)
+						.join("") +
+					"</details>",
+			)
+			.join("") +
+		"</section>"
+	);
+}
+
+async function loadSessionEdits(sessionId, box) {
+	box.innerHTML = '<p class="agent-quiet">Loading code changes…</p>';
+	try {
+		box.innerHTML = codeEditsMarkup(
+			await api(
+				"/api/agents/sessions/" +
+					encodeURIComponent(sessionId) +
+					"/edits",
+			),
+		);
+	} catch (error) {
+		box.innerHTML = "";
+		showError(error);
+	}
+}
+
 function agentTile(agent) {
 	const week = agent.week;
 	const facts = [
@@ -465,7 +720,9 @@ function agentTile(agent) {
 			(last.story.length
 				? storyList(last.story)
 				: '<p class="agent-quiet">It connected but did nothing yet.</p>') +
-			"</div>"
+			'<div class="session-edits" data-edits-for="' +
+			esc(last.id) +
+			'"></div></div>'
 		: agent.status === "never_connected"
 			? '<div class="agent-last"><p class="agent-quiet">Run <code>npx panini-work connect</code> where this agent works, or use <button class="text-button" data-agent-setup="' +
 				esc(agent.id) +
@@ -501,19 +758,66 @@ function agentTile(agent) {
 			"</ul></details>"
 		: "";
 
+	const now =
+		agent.status === "working"
+			? '<span class="agent-state live"><span class="dot"></span>' +
+				esc(cleanTitle(agent.currentTask.title)) +
+				"</span>"
+			: agent.status === "active"
+				? '<span class="agent-state live"><span class="dot"></span>Active now</span>'
+				: agent.status === "never_connected"
+					? '<span class="agent-state"><span class="dot"></span>Not connected yet</span>'
+					: '<span class="agent-state"><span class="dot"></span>Idle · ' +
+						esc(ago(agent.lastActiveAt)) +
+						"</span>";
+	const weekShort = [
+		week.sessions
+			? week.sessions + (week.sessions === 1 ? " session" : " sessions")
+			: "",
+		week.costUsd !== null ? money(week.costUsd) : "",
+	]
+		.filter(Boolean)
+		.join(" · ");
+
 	return (
-		'<article class="agent-tile ' +
+		'<article class="agent-row ' +
 		esc(agent.status) +
-		'"><header><span class="harness-icon"><i class="ph ph-' +
+		'"><div class="agent-line"><button type="button" class="agent-open" data-agent-expand aria-expanded="false"><span class="harness-icon"><i class="ph ph-' +
 		esc(harnessIcons[agent.harness] || "robot") +
-		'" aria-hidden="true"></i></span><div><h2>' +
+		'" aria-hidden="true"></i></span><span class="agent-name"><strong>' +
 		esc(agent.name) +
-		"</h2><small>" +
+		"</strong><small>" +
 		esc(agent.owner) +
 		" · " +
 		esc(harnessLabels[agent.harness] || "MCP client") +
-		"</small></div></header>" +
-		agentStatus(agent) +
+		"</small></span>" +
+		now +
+		'<span class="agent-week-short">' +
+		esc(weekShort || "No sessions this week") +
+		"</span>" +
+		(week.blocked.length
+			? '<span class="agent-flag" title="Blocked requests this week"><i class="ph ph-warning" aria-hidden="true"></i>' +
+				week.blocked.length +
+				"</span>"
+			: '<span class="agent-flag-empty"></span>') +
+		'</button><div class="agent-actions"><button class="button quiet small" data-agent-scope="' +
+		esc(agent.id) +
+		'">Access</button><details class="menu"><summary class="button quiet small icon-only" aria-label="More actions"><i class="ph ph-dots-three" aria-hidden="true"></i></summary><div class="menu-list"><button type="button" data-agent-files="' +
+		esc(agent.id) +
+		'"><i class="ph ph-notebook" aria-hidden="true"></i>Private notes</button><button type="button" data-agent-setup="' +
+		esc(agent.id) +
+		'"><i class="ph ph-plug" aria-hidden="true"></i>Setup steps</button><button type="button" data-agent-rotate="' +
+		esc(agent.id) +
+		'"><i class="ph ph-key" aria-hidden="true"></i>New secret</button>' +
+		(last && last.wroteSomething
+			? '<button type="button" data-rollback-session="' +
+				esc(last.id) +
+				'"><i class="ph ph-arrow-counter-clockwise" aria-hidden="true"></i>Undo last session</button>'
+			: "") +
+		'<button type="button" class="danger" data-agent-revoke="' +
+		esc(agent.id) +
+		'"><i class="ph ph-power" aria-hidden="true"></i>Disconnect</button></div></details></div></div>' +
+		'<div class="agent-detail" hidden>' +
 		(facts.length
 			? '<p class="agent-week">This week: ' +
 				esc(facts.join(" · ")) +
@@ -522,23 +826,7 @@ function agentTile(agent) {
 		blocked +
 		lastView +
 		earlier +
-		'<footer><button class="button quiet small" data-agent-scope="' +
-		esc(agent.id) +
-		'">Access</button><button class="button quiet small" data-agent-files="' +
-		esc(agent.id) +
-		'">Private notes</button>' +
-		(last && last.wroteSomething
-			? '<button class="button quiet small" data-rollback-session="' +
-				esc(last.id) +
-				'">Undo last session</button>'
-			: "") +
-		'<details class="agent-more"><summary class="button quiet small">More</summary><div><button class="button quiet small" data-agent-setup="' +
-		esc(agent.id) +
-		'">Setup steps</button><button class="button quiet small" data-agent-rotate="' +
-		esc(agent.id) +
-		'">New secret</button><button class="button danger small" data-agent-revoke="' +
-		esc(agent.id) +
-		'">Disconnect</button></div></details></footer></article>'
+		"</div></article>"
 	);
 }
 
@@ -571,6 +859,37 @@ function renderAgentBoard() {
 			: "");
 }
 
+// Menus close after a choice or a click elsewhere.
+document.addEventListener("click", (event) => {
+	const target = event.target as AppElement;
+
+	for (const menu of document.querySelectorAll<HTMLDetailsElement>(
+		"details.menu[open]",
+	))
+		if (!menu.contains(target) || target.closest(".menu-list button"))
+			menu.open = false;
+});
+byId("agents").addEventListener("click", (event) => {
+	const open = (event.target as AppElement).closest<AppElement>(
+		"[data-agent-expand]",
+	);
+
+	if (!open) return;
+
+	const detail = open
+		.closest("article")
+		.querySelector<AppElement>(".agent-detail");
+
+	detail.hidden = !detail.hidden;
+	open.setAttribute("aria-expanded", String(!detail.hidden));
+
+	const edits = detail.querySelector<AppElement>("[data-edits-for]");
+
+	if (!detail.hidden && edits && !edits.dataset.loaded) {
+		edits.dataset.loaded = "true";
+		void loadSessionEdits(edits.dataset.editsFor, edits);
+	}
+});
 byId("agents").addEventListener("click", async (event) => {
 	const target = event.target as AppElement;
 	const story = target.closest<AppElement>("[data-session-story]");
@@ -593,10 +912,16 @@ byId("agents").addEventListener("click", async (event) => {
 					"/story",
 			);
 
-			box.innerHTML = result.story.length
-				? storyList(result.story)
-				: '<p class="agent-quiet">Nothing recorded.</p>';
+			box.innerHTML =
+				(result.story.length
+					? storyList(result.story)
+					: '<p class="agent-quiet">Nothing recorded.</p>') +
+				'<div class="session-edits"></div>';
 			box.hidden = false;
+			void loadSessionEdits(
+				story.dataset.sessionStory,
+				box.querySelector<AppElement>(".session-edits"),
+			);
 		}
 		if (rollback) {
 			if (
@@ -635,9 +960,62 @@ byId("connect-command-copy").addEventListener("click", async () => {
 	await navigator.clipboard.writeText("npx panini-work connect");
 	byId("connect-command-copy").textContent = "Copied";
 });
+// Apps that take only a URL: create an agent with the usual grants and show its URL.
+byId("connect-app-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const form = event.currentTarget as HTMLFormElement;
+	const values = formValues(form);
+	const memberId = state.account?.identity?.id;
+
+	if (!memberId) {
+		byId("connect-agent-dialog").close();
+		byId("new-agent").click();
+		return;
+	}
+	try {
+		const response = await api("/api/agents", {
+			method: "POST",
+			body: JSON.stringify({
+				memberId,
+				name: values.name,
+				harness: values.harness,
+				description: "Added from the Agents page.",
+				capabilities: [
+					"work:read",
+					"work:propose",
+					"context:read",
+					"context:propose",
+					"evidence:report",
+					"workspace:read",
+					"workspace:write",
+				],
+				dataScope: {
+					projects: ["*"],
+					contextPaths: ["/"],
+					sourceVisibilities: ["company"],
+				},
+			}),
+		});
+
+		byId("connect-agent-dialog").close();
+		await load();
+		navigate("agents");
+		showAgentSetup(response, values.harness);
+	} catch (error) {
+		showError(error);
+	}
+});
 byId("connect-manual").addEventListener("click", () => {
 	byId("connect-agent-dialog").close();
 	byId("new-agent").click();
+});
+byId("home-mine").addEventListener("click", (event) => {
+	const task = (event.target as AppElement).closest<AppElement>(
+		"[data-task]",
+	);
+
+	if (task) void openTaskDetail(task.dataset.task).catch(showError);
 });
 byId("home-needs").addEventListener("click", async (event) => {
 	const confirm = (event.target as AppElement).closest<AppElement>(
@@ -653,6 +1031,14 @@ byId("home-needs").addEventListener("click", async (event) => {
 		)
 	) {
 		navigate("review");
+		return;
+	}
+	if (
+		(event.target as AppElement).closest<AppElement>(
+			'[data-go-view="decisions"]',
+		)
+	) {
+		navigate("decisions");
 		return;
 	}
 	try {
@@ -671,7 +1057,15 @@ byId("home-needs").addEventListener("click", async (event) => {
 			});
 			await load();
 		} else if (note) {
-			await api(
+			// Answer at once: hide the note, save, then refresh only Home.
+			const row = note.closest<AppElement>(".panel-row");
+
+			row?.querySelectorAll("button").forEach((button) => {
+				button.disabled = true;
+			});
+			row?.classList.add("is-saving");
+
+			const saved = await api(
 				"/api/notes/" +
 					encodeURIComponent(note.dataset.note) +
 					"/state",
@@ -680,7 +1074,19 @@ byId("home-needs").addEventListener("click", async (event) => {
 					body: JSON.stringify({ state: note.dataset.noteState }),
 				},
 			);
-			await load();
+			const entryId = saved.note?.contextEntryId;
+
+			row?.remove();
+			if (entryId)
+				showToast("Added to Knowledge", "Open", async () => {
+					state.context = await api("/api/context");
+					renderContext();
+					navigate("context");
+					await openContextEntry(entryId);
+				});
+			else showToast("Dismissed");
+			state.home = await api("/api/home");
+			renderHome();
 		}
 	} catch (error) {
 		showError(error);

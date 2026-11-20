@@ -108,6 +108,8 @@ export function installIdentityRoutes(
 		"/api/relay/work-reports",
 		// Authenticated by the agent's own enrollment secret inside the route.
 		"/api/agent/hooks",
+		"/api/agent/hooks/edit",
+		"/api/agent/hooks/transcript",
 		"/api/agent/otlp/v1/logs",
 		// Connect requests: a member must approve each one in the browser.
 		"/api/connect/start",

@@ -378,17 +378,62 @@ byId("agent-form").addEventListener("submit", async (event) => {
 	}
 });
 
+/** A dropdown of checkboxes; values outside the known options stay selectable. */
+function fillMultiSelect(id, name, options, selected) {
+	const known = new Set(options.map(([value]) => value));
+	const all = [
+		...options,
+		...selected
+			.filter((value) => !known.has(value))
+			.map((value) => [value, value]),
+	];
+
+	const summary = () => {
+		const checked = all.filter(([value]) => selected.includes(value));
+
+		return checked.length === 0
+			? "None"
+			: checked.length === 1
+				? checked[0][1]
+				: checked.length + " selected";
+	};
+
+	byId(id).innerHTML =
+		"<summary>" +
+		esc(summary()) +
+		'</summary><div class="multi-options">' +
+		all
+			.map(
+				([value, label]) =>
+					'<label><input type="checkbox" name="' +
+					name +
+					'" value="' +
+					esc(value) +
+					'"' +
+					(selected.includes(value) ? " checked" : "") +
+					"> " +
+					esc(label) +
+					"</label>",
+			)
+			.join("") +
+		"</div>";
+	byId(id).onchange = () => {
+		const checked = [
+			...byId(id).querySelectorAll<HTMLInputElement>("input:checked"),
+		].map((input) => input.value);
+
+		selected = checked;
+		byId(id).querySelector("summary").textContent = summary();
+	};
+}
+
 byId("agent-scope-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
 	const form = event.currentTarget as AppElement;
 	const values = new FormData(form);
 
-	const lines = (name) =>
-		String(values.get(name) || "")
-			.split("\n")
-			.map((value) => value.trim())
-			.filter(Boolean);
+	const lines = (name) => values.getAll(name).map(String);
 
 	try {
 		await api(
@@ -515,19 +560,47 @@ byId("agents").addEventListener("click", async (event) => {
 
 			if (!profile) throw new Error("Agent profile is unavailable.");
 			byId("agent-scope-id").value = profile.id;
-			byId("agent-scope-projects").value =
-				profile.dataScope.projects.join("\n");
-			byId("agent-scope-paths").value =
-				profile.dataScope.contextPaths.join("\n");
-			byId("agent-scope-visibilities").value =
-				profile.dataScope.sourceVisibilities.join("\n");
+
+			const paths = (state.context?.tree || [])
+				.filter((node) => node.kind === "folder")
+				.map((node) => node.path);
+
+			fillMultiSelect(
+				"agent-scope-projects",
+				"projects",
+				[
+					["*", "All projects, now and future"],
+					...(state.workGraph?.projects || []).map((project) => [
+						project.name,
+						project.name,
+					]),
+				],
+				profile.dataScope.projects,
+			);
+			fillMultiSelect(
+				"agent-scope-paths",
+				"contextPaths",
+				[
+					["/", "All knowledge"],
+					...[...new Set(paths)]
+						.filter((path) => path !== "/")
+						.map((path) => [path, path]),
+				],
+				profile.dataScope.contextPaths,
+			);
+			fillMultiSelect(
+				"agent-scope-visibilities",
+				"sourceVisibilities",
+				[["company", "Company-wide"]],
+				profile.dataScope.sourceVisibilities,
+			);
 			byId("agent-scope-dialog").showModal();
 		}
 		if (filesId) {
 			workspaceFilesAgentId = filesId;
 			byId("workspace-files-title").textContent =
 				(state.agents.find((profile) => profile.id === filesId)?.name ||
-					"Agent") + " : workspace files";
+					"Agent") + " · private notes";
 			byId("workspace-files-scope").value = "agent";
 			byId("workspace-files-dialog").showModal();
 			await loadWorkspaceFiles();
@@ -1274,6 +1347,17 @@ byId("assessment-decision-form").addEventListener("submit", async (event) => {
 	}
 });
 
+byId("recent-changes").addEventListener("click", (event) => {
+	const target = event.target as AppElement;
+	const filter = target.closest<AppElement>("[data-activity-filter]");
+
+	if (filter) {
+		activityView.filter = filter.dataset.activityFilter;
+		activityView.limit = 50;
+	} else if (target.closest("[data-activity-more]")) activityView.limit += 50;
+	else return;
+	byId("recent-changes").innerHTML = activityMarkup();
+});
 byId("recent-changes").addEventListener("click", async (event) => {
 	const button = (event.target as AppElement).closest<AppElement>(
 		"[data-undo-change]",

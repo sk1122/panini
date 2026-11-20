@@ -1,3 +1,6 @@
+import { PostgresDecisions } from "../decisions/store.js";
+import { PostgresCodeEdits } from "../agents/code-edits.js";
+import { PostgresConnectorCredentials } from "../connectors/credentials.js";
 import { PostgresModelSettings } from "../intelligence/model-settings.js";
 import {
 	workStatePolicy,
@@ -1150,6 +1153,9 @@ export class PostgresLedgerStore implements LedgerStore {
 	readonly reconcileRuns: PostgresReconcileRuns;
 	readonly oauth: PostgresOAuthStore;
 	readonly modelSettings: PostgresModelSettings;
+	readonly connectorCredentials: PostgresConnectorCredentials;
+	readonly codeEdits: PostgresCodeEdits;
+	readonly decisions: PostgresDecisions;
 	private readonly pool: pg.Pool;
 	private readonly cipher: PayloadCipher;
 	private readonly contentReady: Promise<void>;
@@ -1172,6 +1178,21 @@ export class PostgresLedgerStore implements LedgerStore {
 		);
 		this.oauth = new PostgresOAuthStore(this.pool, organizationId);
 		this.cipher = PayloadCipher.fromEnvironment(contentEncryptionKey);
+		this.connectorCredentials = new PostgresConnectorCredentials(
+			this.pool,
+			organizationId,
+			this.cipher,
+		);
+		this.codeEdits = new PostgresCodeEdits(
+			this.pool,
+			organizationId,
+			this.cipher,
+		);
+		this.decisions = new PostgresDecisions(
+			this.pool,
+			organizationId,
+			this.cipher,
+		);
 		this.modelSettings = new PostgresModelSettings(
 			this.pool,
 			organizationId,
@@ -4975,6 +4996,15 @@ export class PostgresLedgerStore implements LedgerStore {
 		}
 	}
 
+	async listUnknownModelCalls(budgetId: string): Promise<ModelCall[]> {
+		return (
+			await this.pool.query(
+				"SELECT * FROM model_calls WHERE organization_id=$1 AND budget_id=$2 AND state='unknown'",
+				[this.organizationId, budgetId],
+			)
+		).rows.map(modelCallFromRow);
+	}
+
 	async reconcileUnknownModelCallAtReservedBound(
 		callId: string,
 	): Promise<ModelCall> {
@@ -5121,7 +5151,7 @@ export class PostgresLedgerStore implements LedgerStore {
 	} | null> {
 		const result = await this.pool.query<ModelCallRow>(
 			`SELECT * FROM model_calls WHERE organization_id=$1 AND logical_call_key=$2
-         AND attempt=1 LIMIT 1`,
+         ORDER BY attempt DESC LIMIT 1`,
 			[this.organizationId, logicalCallKey],
 		);
 		const row = result.rows[0];

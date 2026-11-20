@@ -16,6 +16,7 @@
 		"src/client/03-work-review.ts",
 		"src/client/04-context.ts",
 		"src/client/05-agents-tasks.ts",
+		"src/client/08-decisions.ts",
 		"src/client/06-load-navigation.ts",
 		"src/client/07-forms.ts"
 	]

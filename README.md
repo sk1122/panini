@@ -169,7 +169,9 @@ Enabling processing can send permitted source text to the configured providers a
 
 ## Connect an agent
 
-Use `npx panini-work connect`, or create a profile in the **Agents** view and follow its setup recipe. MCP is served at `/mcp`. Agents authenticate with their profile's secret, or with MCP OAuth 2.1 (PKCE, one-hour access tokens bound to `/mcp`, rotating refresh tokens); a member approves each new OAuth client in the browser. Grant only the access the agent needs.
+Use `npx panini-work connect`, or create a profile in the **Agents** view and follow its setup recipe. Each person can connect any number of agents, from any number of machines.
+
+**No terminal (ChatGPT, the Codex app, other apps):** in **Agents → Connect an agent**, create an agent and copy its MCP URL. The URL contains the agent's secret (`/mcp/k/<secret>`), so the app needs nothing else. ChatGPT needs Panini on a public HTTPS address. MCP is served at `/mcp`. Agents authenticate with their profile's secret, or with MCP OAuth 2.1 (PKCE, one-hour access tokens bound to `/mcp`, rotating refresh tokens); a member approves each new OAuth client in the browser. Grant only the access the agent needs.
 
 What an agent does through Panini:
 
@@ -179,6 +181,16 @@ What an agent does through Panini:
 - Every tool call is logged per agent session by id, never by content. The **Agents** view shows each session: owner, claimed task, reads, writes, denied calls, cost, and a one-click rollback of what the session wrote.
 
 Claude Code hooks report session start and end to `/api/agent/hooks`. Point an agent's OpenTelemetry log export (OTLP over HTTP with JSON) at `/api/agent/otlp/v1/logs` with its token to see cost per session. Set `OTEL_EXPORTER_OTLP_ENDPOINT` on the server to export each tool call as an `execute_tool` span.
+
+## Connect Slack, GitHub and Notion
+
+On **Integrations**, an admin connects each source with its own button. Each install makes its own apps, so no one else sees your tokens:
+
+- **GitHub:** **Create GitHub app** creates a private, read-only app in your account or organization; GitHub sends its keys straight back to Panini. Then **Install on repositories** and **Choose repositories**.
+- **Slack:** **Create Slack app** opens Slack with the app already filled in (Socket Mode, read-only scopes). Install it, create an app-level token with `connections:write`, and paste both tokens and the channel IDs.
+- **Notion:** create an internal integration, share pages with it, and paste its secret.
+
+Tokens are checked with the provider, stored encrypted and never shown again. Panini restarts its worker (and, for GitHub, its server) to apply them. Connectors set in the server's environment still take precedence.
 
 See [agent setup](docs/agent-setup.md), [Codex integration](integrations/codex/README.md), [Claude Code integration](integrations/claude-code/README.md), and [Slack integration](integrations/slack/README.md).
 

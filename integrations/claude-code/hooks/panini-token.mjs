@@ -12,12 +12,16 @@ export const KEYCHAIN_SERVICE = "work.panini.agent";
 export function pantryConnection() {
 	let saved = {};
 
-	try {
-		saved = JSON.parse(
-			readFileSync(join(homedir(), ".panini", "agent.json"), "utf8"),
-		);
-	} catch {
-		/* Not connected yet. */
+	// Claude Code's own connection first; agent.json is the older single file.
+	for (const name of ["agent-claude_code.json", "agent.json"]) {
+		try {
+			saved = JSON.parse(
+				readFileSync(join(homedir(), ".panini", name), "utf8"),
+			);
+			break;
+		} catch {
+			/* Not connected yet. */
+		}
 	}
 
 	const url = process.env.PANINI_URL || saved.url;
@@ -29,7 +33,14 @@ export function pantryConnection() {
 	if (saved.tokenStore === "keychain" && process.platform === "darwin") {
 		const found = spawnSync(
 			"security",
-			["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", url, "-w"],
+			[
+				"find-generic-password",
+				"-s",
+				KEYCHAIN_SERVICE,
+				"-a",
+				saved.keychainAccount ?? url,
+				"-w",
+			],
 			{
 				encoding: "utf8",
 				timeout: 3_000,
